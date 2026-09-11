@@ -1,0 +1,7 @@
+# macOS
+.DS_Store
+
+# Environment files with credentials
+.env
+.env.*
+!.env.example
