@@ -41,6 +41,7 @@ V1 uses the following implementation technologies:
 | Schema migrations              | Alembic                                       | Authoritative database migration history                     |
 | Application configuration      | Pydantic Settings / environment configuration | Runtime configuration                                        |
 | Backend language               | Python                                        | Ingestion service implementation                             |
+| Automated testing              | pytest 8.4.2                                  | Validation unit tests and loader integration tests           |
 
 SQLAlchemy ORM models are not used as an independent source of schema definition. PostgreSQL and Alembic remain authoritative for the physical database schema.
 
@@ -50,21 +51,24 @@ SQLAlchemy ORM models are not used as an independent source of schema definition
 
 The ingestion implementation is intentionally separated into focused modules.
 
+Currently implemented:
+
 ```text
 backend/
 └── app/
     └── ingestion/
         ├── __init__.py
-        ├── statcast.py
         ├── validation.py
         └── loader.py
 ```
 
-### `statcast.py`
+`statcast.py` is the planned orchestration module. It is not implemented yet.
+
+### `statcast.py` (planned)
 
 Orchestration layer.
 
-Responsibilities:
+When implemented, its responsibilities will be:
 
 * coordinate the ingestion workflow;
 * create and update the ingestion batch;
@@ -94,22 +98,25 @@ The validation layer should not perform database persistence.
 
 ### `loader.py`
 
-Persistence layer.
+Persistence layer for one validated Statcast chunk.
+
+`backend/app/ingestion/loader.py` is implemented. It uses SQLAlchemy Core and receives an existing SQLAlchemy `Connection`. The caller owns the transaction boundary.
 
 Responsibilities:
 
-* insert valid Statcast rows using SQLAlchemy Core;
-* insert rejection records into `raw.ingestion_rejection`;
-* update ingestion-batch information as required;
-* use PostgreSQL conflict handling for idempotent source-key insertion.
+* normalize Pandas/NumPy values at the database boundary;
+* insert valid Statcast rows into `raw.statcast_pitch`;
+* attach `ingestion_batch_id` to each inserted pitch row;
+* persist `RejectionRecord` objects into `raw.ingestion_rejection`;
+* use PostgreSQL `INSERT ... ON CONFLICT DO NOTHING RETURNING` for idempotent source-key insertion.
 
-The loader should not contain baseball-statistics calculations or source-row validation rules.
+The loader should not contain baseball-statistics calculations or source-row validation rules. It does not create or commit its own transaction. A fatal error is expected to be handled by the caller's transaction boundary.
 
 ---
 
 ## 5. Ingestion Service Interface
 
-V1 exposes the following service interface:
+The planned orchestration interface, to be implemented in `statcast.py`, is:
 
 ```python
 ingest_statcast_file(
@@ -118,6 +125,8 @@ ingest_statcast_file(
     chunk_size: int = 10_000,
 ) -> IngestionResult
 ```
+
+This interface is not implemented yet.
 
 ### Inputs
 
@@ -460,9 +469,26 @@ This distinction keeps operational reporting meaningful.
 
 SQLAlchemy Core is used for bulk persistence.
 
-The loader is responsible for translating validated source data into database insert operations.
+`backend/app/ingestion/loader.py` persists one validated Statcast chunk.
 
-PostgreSQL remains responsible for enforcing database-level constraints, including:
+The loader receives an existing SQLAlchemy `Connection`. The caller owns the transaction boundary. The loader does not begin, commit, or roll back the transaction.
+
+Pandas/NumPy values are normalized at the database boundary before insert:
+
+* missing Pandas/NumPy values are converted to `None` so PostgreSQL receives `NULL`;
+* NumPy scalar values are converted to native Python values where necessary.
+
+Valid rows are inserted into `raw.statcast_pitch`. Rejected rows are not inserted into `raw.statcast_pitch`; `RejectionRecord` objects are persisted into `raw.ingestion_rejection`.
+
+Each inserted pitch row includes `ingestion_batch_id`.
+
+PostgreSQL remains the final enforcement boundary for source-key uniqueness:
+
+```text
+(game_pk, at_bat_number, pitch_number)
+```
+
+PostgreSQL also remains responsible for:
 
 * primary keys;
 * foreign keys;
@@ -471,6 +497,102 @@ PostgreSQL remains responsible for enforcing database-level constraints, includi
 * source-key uniqueness.
 
 The ingestion code should not attempt to replace database integrity constraints with application-only checks.
+
+A fatal error during persistence is expected to be handled by the caller's transaction boundary.
+
+### Insert-and-Count Strategy
+
+V1 uses PostgreSQL:
+
+    INSERT ... ON CONFLICT DO NOTHING RETURNING
+
+through SQLAlchemy Core to load validated Statcast rows into:
+
+    raw.statcast_pitch
+
+PostgreSQL remains the final enforcement boundary for source-key uniqueness.
+
+The `RETURNING` result identifies rows that were actually inserted.
+
+For each processing chunk:
+
+    records_attempted = number of valid rows passed to the loader
+    records_loaded    = number of rows returned by INSERT ... RETURNING
+    records_skipped   = records_attempted - records_loaded
+
+Therefore:
+
+* `records_loaded` represents rows actually inserted into PostgreSQL;
+* `records_skipped` represents valid rows whose source keys already existed in PostgreSQL; and
+* a separate pre-insert existence query is not required.
+
+### Duplicate Distinction
+
+V1 distinguishes between duplicates detected during validation and source keys that already exist in PostgreSQL.
+
+A duplicate source key within the current processing chunk:
+
+    DUPLICATE_SOURCE_KEY
+
+is a row-level validation rejection and is counted as:
+
+    records_rejected
+
+A valid source key that already exists in PostgreSQL is handled by:
+
+    ON CONFLICT DO NOTHING
+
+and is counted as:
+
+    records_skipped
+
+It is not recorded in `raw.ingestion_rejection`.
+
+This distinction preserves the difference between invalid duplicate source data within the current input and an otherwise valid record being reprocessed from an already-ingested source.
+
+### Transaction Boundary
+
+Each processing chunk is handled within its own database transaction.
+
+The transaction includes:
+
+1. insertion of valid Statcast rows into `raw.statcast_pitch`;
+2. insertion of rejection records into `raw.ingestion_rejection`; and
+3. any other database changes required for that chunk.
+
+If a fatal error occurs during the chunk:
+
+    BEGIN
+        ↓
+    load valid rows
+        ↓
+    load rejection records
+        ↓
+    ERROR
+        ↓
+    ROLLBACK
+
+The current chunk is rolled back, while previously committed chunks remain committed.
+
+### Rationale
+
+Using PostgreSQL's `ON CONFLICT DO NOTHING RETURNING` allows the database to enforce source-key uniqueness while also providing an authoritative way to determine which rows were actually inserted.
+
+It avoids a separate pre-insert existence query and therefore avoids a race condition between checking whether a source key exists and attempting to insert it.
+
+The resulting batch accounting remains internally consistent:
+
+    records_received
+        =
+    records_filtered
+        +
+    records_rejected
+        +
+    records_skipped
+        +
+    records_loaded
+
+Existing database duplicates are skipped, not rejected.
 
 Application validation exists to provide earlier, clearer rejection handling and diagnostics.
 
@@ -525,34 +647,83 @@ Baseball-specific statistics and analytical transformations belong in downstream
 
 ## 18. Testing Strategy
 
-The ingestion implementation should be tested at multiple levels.
+The ingestion implementation is tested with pytest.
 
-### Unit tests
+pytest 8.4.2 is included in `backend/requirements.txt`. No `pytest.ini`, `pyproject.toml`, or `conftest.py` has been introduced. Default pytest discovery is used from the `backend/` directory:
 
-Focus on deterministic Python behavior such as:
+```text
+backend/
+└── tests/
+    ├── __init__.py
+    └── ingestion/
+        ├── __init__.py
+        ├── test_loader.py
+        └── test_validation.py
+```
+
+### Validation unit tests
+
+Located in `tests/ingestion/test_validation.py`.
+
+These tests do not require PostgreSQL. They construct small Pandas DataFrames in memory and exercise `validation.py` independently.
+
+They cover:
 
 * required-field validation;
 * source-key validation;
-* duplicate detection;
+* intra-chunk duplicate detection;
 * filtering logic;
 * rejection-reason assignment;
-* count calculations.
+* `source_row_number` behavior;
+* count calculations;
+* JSON-safe conversion of Pandas/NumPy values.
 
-### Integration tests
+There are currently 20 validation unit tests.
 
-Use PostgreSQL to verify:
+### Loader integration tests
 
-* successful insertion;
-* foreign-key behavior;
+Located in `tests/ingestion/test_loader.py`.
+
+These tests use the real PostgreSQL database configured through `app.core.config.settings.database_url`. They do not mock PostgreSQL or SQLAlchemy persistence behavior.
+
+They cover:
+
+* successful insertion into `raw.statcast_pitch`;
 * source-key uniqueness;
-* `ON CONFLICT DO NOTHING`;
+* `ON CONFLICT DO NOTHING RETURNING`;
+* skip versus load counts;
 * ingestion-batch lineage;
-* rejection persistence;
-* transaction rollback behavior.
+* rejection persistence into `raw.ingestion_rejection`;
+* loading valid rows and rejections in the same chunk.
+
+There are currently 6 loader integration tests.
+
+PostgreSQL is the final enforcement boundary for source-key uniqueness, `ON CONFLICT` behavior, `RETURNING` behavior, foreign keys, and persistence. These behaviors are therefore verified against PostgreSQL rather than mocked.
+
+### Test isolation
+
+Loader integration tests do not depend on manually inserted sample data and do not hard-code `ingestion_batch_id` values.
+
+Each loader test:
+
+* creates its own `raw.ingestion_batch` row;
+* uses unique test source keys that will not collide with sample Statcast data;
+* uses the caller-owned transaction contract (`engine.begin()`);
+* deletes `raw.statcast_pitch` and `raw.ingestion_rejection` rows before deleting the ingestion batch.
+
+### Current test status
+
+At this checkpoint:
+
+* Validation tests: 20 passed
+* Loader integration tests: 6 passed
+* Total: 26 passed
+
+These counts describe the current checkpoint. They are not a permanent test inventory.
 
 ### End-to-end ingestion test
 
-A representative Statcast sample should verify the complete workflow:
+An end-to-end test of the complete orchestration workflow remains planned until `statcast.py` is implemented:
 
 ```text
 CSV
@@ -570,7 +741,7 @@ database insertion
 ingestion result
 ```
 
-The existing small Statcast sample files can be used as fixtures for initial integration testing.
+The existing small Statcast sample files can be used as fixtures for that later test.
 
 ---
 
@@ -594,6 +765,8 @@ The following V1 decisions are considered locked unless a new requirement demons
 | Validation details             | JSONB                        |
 | Source key in rejection        | JSONB                        |
 | Ingestion lineage              | `ingestion_batch_id`         |
+| Loader transaction             | Caller-owned SQLAlchemy connection |
+| Automated testing              | pytest                       |
 | Downloading source files       | Outside ingestion service    |
 | Baseball statistics            | Outside ingestion service    |
 
