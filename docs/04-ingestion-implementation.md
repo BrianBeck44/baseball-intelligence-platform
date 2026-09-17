@@ -41,7 +41,7 @@ V1 uses the following implementation technologies:
 | Schema migrations              | Alembic                                       | Authoritative database migration history                     |
 | Application configuration      | Pydantic Settings / environment configuration | Runtime configuration                                        |
 | Backend language               | Python                                        | Ingestion service implementation                             |
-| Automated testing              | pytest 8.4.2                                  | Validation unit tests and loader integration tests           |
+| Automated testing              | pytest 8.4.2                                  | Validation, loader, and batch integration tests              |
 
 SQLAlchemy ORM models are not used as an independent source of schema definition. PostgreSQL and Alembic remain authoritative for the physical database schema.
 
@@ -58,6 +58,7 @@ backend/
 └── app/
     └── ingestion/
         ├── __init__.py
+        ├── batch.py
         ├── validation.py
         └── loader.py
 ```
@@ -111,6 +112,63 @@ Responsibilities:
 * use PostgreSQL `INSERT ... ON CONFLICT DO NOTHING RETURNING` for idempotent source-key insertion.
 
 The loader should not contain baseball-statistics calculations or source-row validation rules. It does not create or commit its own transaction. A fatal error is expected to be handled by the caller's transaction boundary.
+
+### `batch.py`
+
+Persistence layer for `raw.ingestion_batch`.
+
+`backend/app/ingestion/batch.py` is implemented. It uses SQLAlchemy Core and receives an existing SQLAlchemy `Connection`. The caller owns the transaction boundary.
+
+Responsibilities:
+
+* create an ingestion batch in `RUNNING` status with all five counters initialized to `0`;
+* update the five mutually exclusive counters during processing;
+* complete a batch as `COMPLETED` with `completed_at` and final counters;
+* fail a batch as `FAILED` with `completed_at` and current counters;
+* raise if an update targets a nonexistent `ingestion_batch_id`.
+
+The batch module does not read CSV files, validate source rows, load pitch rows, or calculate baseball statistics. It does not commit or roll back.
+
+The persistence functions are:
+
+```python
+create_ingestion_batch(connection, source_name, started_at) -> int
+
+update_ingestion_batch_counts(
+    connection,
+    ingestion_batch_id,
+    *,
+    records_received,
+    records_filtered,
+    records_rejected,
+    records_skipped,
+    records_loaded,
+) -> None
+
+complete_ingestion_batch(
+    connection,
+    ingestion_batch_id,
+    *,
+    completed_at,
+    records_received,
+    records_filtered,
+    records_rejected,
+    records_skipped,
+    records_loaded,
+) -> None
+
+fail_ingestion_batch(
+    connection,
+    ingestion_batch_id,
+    *,
+    completed_at,
+    records_received,
+    records_filtered,
+    records_rejected,
+    records_skipped,
+    records_loaded,
+) -> None
+```
 
 ---
 
@@ -262,6 +320,30 @@ records_filtered
 ```
 
 This invariant provides a useful consistency check for ingestion results.
+
+### Persistence
+
+The five counters are persisted on `raw.ingestion_batch`:
+
+* `records_received`
+* `records_filtered`
+* `records_rejected`
+* `records_skipped`
+* `records_loaded`
+
+Alembic revision `e02a844d7b54` added `records_filtered` and `records_skipped` as `INTEGER NOT NULL DEFAULT 0`, with non-negative CHECK constraints.
+
+### Status vocabulary
+
+`raw.ingestion_batch.status` remains TEXT. PostgreSQL CHECK constraint `ck_ingestion_batch_status` restricts it to exactly:
+
+```text
+RUNNING
+COMPLETED
+FAILED
+```
+
+V1 does not use additional statuses or a PostgreSQL enum.
 
 ---
 
@@ -657,6 +739,7 @@ backend/
     ├── __init__.py
     └── ingestion/
         ├── __init__.py
+        ├── test_batch.py
         ├── test_loader.py
         └── test_validation.py
 ```
@@ -700,9 +783,28 @@ There are currently 6 loader integration tests.
 
 PostgreSQL is the final enforcement boundary for source-key uniqueness, `ON CONFLICT` behavior, `RETURNING` behavior, foreign keys, and persistence. These behaviors are therefore verified against PostgreSQL rather than mocked.
 
+### Batch persistence integration tests
+
+Located in `tests/ingestion/test_batch.py`.
+
+These tests use the real PostgreSQL database configured through `app.core.config.settings.database_url`. They do not mock PostgreSQL.
+
+They cover:
+
+* creating a `RUNNING` batch with all five counters initialized to `0`;
+* updating the five counters without changing status;
+* completing a batch as `COMPLETED` with `completed_at`;
+* failing a batch as `FAILED` with `completed_at`;
+* PostgreSQL rejection of an invalid status;
+* PostgreSQL rejection of NULL for `records_filtered` and `records_skipped`;
+* PostgreSQL rejection of a negative counter;
+* a clear exception when updating a nonexistent `ingestion_batch_id`.
+
+There are currently 8 batch persistence integration tests.
+
 ### Test isolation
 
-Loader integration tests do not depend on manually inserted sample data and do not hard-code `ingestion_batch_id` values.
+Loader and batch integration tests do not depend on manually inserted sample data and do not hard-code `ingestion_batch_id` values.
 
 Each loader test:
 
@@ -711,13 +813,16 @@ Each loader test:
 * uses the caller-owned transaction contract (`engine.begin()`);
 * deletes `raw.statcast_pitch` and `raw.ingestion_rejection` rows before deleting the ingestion batch.
 
+Each batch test creates its own `raw.ingestion_batch` row with a unique `source_name` and deletes that row after the assertion.
+
 ### Current test status
 
 At this checkpoint:
 
 * Validation tests: 20 passed
 * Loader integration tests: 6 passed
-* Total: 26 passed
+* Batch persistence tests: 8 passed
+* Total: 34 passed
 
 These counts describe the current checkpoint. They are not a permanent test inventory.
 
@@ -765,6 +870,8 @@ The following V1 decisions are considered locked unless a new requirement demons
 | Validation details             | JSONB                        |
 | Source key in rejection        | JSONB                        |
 | Ingestion lineage              | `ingestion_batch_id`         |
+| Ingestion status vocabulary    | RUNNING / COMPLETED / FAILED |
+| Batch persistence              | SQLAlchemy Core `batch.py`   |
 | Loader transaction             | Caller-owned SQLAlchemy connection |
 | Automated testing              | pytest                       |
 | Downloading source files       | Outside ingestion service    |
