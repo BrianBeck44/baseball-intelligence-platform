@@ -6,5 +6,8 @@
 .env.*
 !.env.example
 
+# Python virtual environment
+.venv/
+
 # Local data artifacts
 data/
