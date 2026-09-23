@@ -7,6 +7,7 @@ from sqlalchemy import MetaData, Table
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.engine import Connection
 
+DATABASE_INSERT_BATCH_SIZE = 500
 
 @dataclass(frozen=True)
 class ChunkLoadResult:
@@ -72,15 +73,24 @@ def load_statcast_chunk(
             database_row["ingestion_batch_id"] = ingestion_batch_id
             rows_to_insert.append(database_row)
 
-        stmt = insert(statcast_pitch).values(rows_to_insert)
+        inserted_ids = []
 
-        stmt = stmt.on_conflict_do_nothing(
-            constraint="uq_raw_statcast_pitch_source_key"
-        ).returning(
-            statcast_pitch.c.raw_statcast_pitch_id
-        )
+        for start in range(0, len(rows_to_insert), DATABASE_INSERT_BATCH_SIZE):
+            batch_rows = rows_to_insert[
+                start : start + DATABASE_INSERT_BATCH_SIZE
+            ]
 
-        inserted_ids = connection.execute(stmt).scalars().all()
+            stmt = insert(statcast_pitch).values(batch_rows)
+
+            stmt = stmt.on_conflict_do_nothing(
+                constraint="uq_raw_statcast_pitch_source_key"
+            ).returning(
+                statcast_pitch.c.raw_statcast_pitch_id
+            )
+
+            inserted_ids.extend(
+                connection.execute(stmt).scalars().all()
+            )
 
         records_loaded = len(inserted_ids)
 
