@@ -1,7 +1,7 @@
 """MLB Stats API client.
 
-Network access for MLB people lookups is isolated here. This module
-does not query or write to PostgreSQL.
+Network access for MLB people and team lookups is isolated here. This
+module does not query or write to PostgreSQL.
 """
 
 from __future__ import annotations
@@ -15,12 +15,19 @@ from urllib.request import Request, urlopen
 
 
 PEOPLE_URL = "https://statsapi.mlb.com/api/v1/people"
+TEAMS_URL = "https://statsapi.mlb.com/api/v1/teams"
 
 
 @dataclass(frozen=True)
 class MlbPlayer:
     mlb_player_id: int
     full_name: str
+
+
+@dataclass(frozen=True)
+class MlbTeam:
+    code: str
+    name: str
 
 
 class MlbStatsApiError(ValueError):
@@ -40,6 +47,12 @@ def fetch_mlb_players(player_ids: Collection[int]) -> list[MlbPlayer]:
 
     payload = _get_json(_people_url(unique_ids))
     return _parse_people(payload)
+
+
+def fetch_mlb_teams() -> list[MlbTeam]:
+    """Return team code and name for MLB Stats API team records."""
+    payload = _get_json(TEAMS_URL)
+    return _parse_teams(payload)
 
 
 def _unique_player_ids(player_ids: Iterable[int]) -> list[int]:
@@ -127,3 +140,43 @@ def _parse_person(record: object, index: int) -> MlbPlayer:
         )
 
     return MlbPlayer(mlb_player_id=player_id, full_name=full_name)
+
+
+def _parse_teams(payload: object) -> list[MlbTeam]:
+    if not isinstance(payload, dict):
+        raise MlbStatsApiError(
+            "MLB Stats API teams response must be a JSON object."
+        )
+
+    if "teams" not in payload:
+        raise MlbStatsApiError(
+            "MLB Stats API teams response is missing the 'teams' field."
+        )
+
+    teams = payload["teams"]
+    if not isinstance(teams, list):
+        raise MlbStatsApiError("MLB Stats API 'teams' field must be a list.")
+
+    return [_parse_team(record, index) for index, record in enumerate(teams)]
+
+
+def _parse_team(record: object, index: int) -> MlbTeam:
+    if not isinstance(record, dict):
+        raise MlbStatsApiError(
+            f"MLB Stats API team at index {index} must be an object."
+        )
+
+    abbreviation = record.get("abbreviation")
+    name = record.get("name")
+
+    if not isinstance(abbreviation, str) or not abbreviation:
+        raise MlbStatsApiError(
+            f"MLB Stats API team at index {index} is missing a valid "
+            f"'abbreviation'."
+        )
+    if not isinstance(name, str) or not name:
+        raise MlbStatsApiError(
+            f"MLB Stats API team at index {index} is missing a valid 'name'."
+        )
+
+    return MlbTeam(code=abbreviation, name=name)
