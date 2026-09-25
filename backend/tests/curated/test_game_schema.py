@@ -192,5 +192,5 @@ def test_downgrade_removes_game_table():
             constraints = _fetch_constraints(connection)
             assert constraints == []
     finally:
-        command.upgrade(config, GAME_REVISION)
+        command.upgrade(config, "head")
         engine.dispose()
