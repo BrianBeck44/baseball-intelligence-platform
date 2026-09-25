@@ -206,5 +206,5 @@ def test_downgrade_removes_game_team_table():
             constraints = _fetch_constraints(connection)
             assert constraints == []
     finally:
-        command.upgrade(config, GAME_TEAM_REVISION)
+        command.upgrade(config, "head")
         engine.dispose()
