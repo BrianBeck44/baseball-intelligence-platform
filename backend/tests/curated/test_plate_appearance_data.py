@@ -1,4 +1,4 @@
-"""Tests for curated.plate_appearance upserts."""
+"""Tests for Statcast plate-appearance transformation into curated records."""
 
 from contextlib import contextmanager
 from datetime import date
@@ -10,8 +10,10 @@ from sqlalchemy.engine import Connection, Engine
 
 from app.core.config import settings
 from app.curated.plate_appearance_data import (
+    CuratedPlateAppearance,
     PlateAppearanceLoadResult,
     load_plate_appearances,
+    transform_plate_appearances,
 )
 from app.curated.statcast_plate_appearance_data import StatcastPlateAppearance
 
@@ -130,6 +132,64 @@ def _insert_outcome_type(connection: Connection, code: str, name: str) -> int:
     ).scalar_one()
 
 
+def _statcast_plate_appearance(
+    *,
+    mlb_game_pk: int,
+    at_bat_number: int = 1,
+    batter_id: int = 888011101,
+    pitcher_id: int = 888011102,
+    batter_team_code: str = "ZRA",
+    pitcher_team_code: str = "ZRB",
+    inning: int = 1,
+    inning_topbot: str = "Top",
+    stand: str = "L",
+    p_throws: str = "R",
+    outcome_code: str | None = "ZRA_SINGLE",
+) -> StatcastPlateAppearance:
+    return StatcastPlateAppearance(
+        mlb_game_pk=mlb_game_pk,
+        at_bat_number=at_bat_number,
+        batter_id=batter_id,
+        pitcher_id=pitcher_id,
+        batter_team_code=batter_team_code,
+        pitcher_team_code=pitcher_team_code,
+        inning=inning,
+        inning_topbot=inning_topbot,
+        stand=stand,
+        p_throws=p_throws,
+        outcome_code=outcome_code,
+    )
+
+
+def _curated_plate_appearance(
+    *,
+    game_id: int,
+    at_bat_number: int = 1,
+    batter_id: int,
+    pitcher_id: int,
+    batter_team_id: int,
+    pitcher_team_id: int,
+    inning: int = 1,
+    inning_topbot: str = "Top",
+    outcome_type_id: int | None,
+    stand: str = "L",
+    p_throws: str = "R",
+) -> CuratedPlateAppearance:
+    return CuratedPlateAppearance(
+        game_id=game_id,
+        at_bat_number=at_bat_number,
+        batter_id=batter_id,
+        pitcher_id=pitcher_id,
+        batter_team_id=batter_team_id,
+        pitcher_team_id=pitcher_team_id,
+        inning=inning,
+        inning_topbot=inning_topbot,
+        outcome_type_id=outcome_type_id,
+        stand=stand,
+        p_throws=p_throws,
+    )
+
+
 def _fetch_plate_appearance(
     connection: Connection,
     game_id: int,
@@ -148,7 +208,9 @@ def _fetch_plate_appearance(
                 pitcher_team_id,
                 inning,
                 inning_topbot,
-                outcome_type_id
+                outcome_type_id,
+                stand,
+                p_throws
             FROM curated.plate_appearance
             WHERE game_id = :game_id
               AND at_bat_number = :at_bat_number
@@ -158,20 +220,674 @@ def _fetch_plate_appearance(
     ).mappings().one()
 
 
-def _count_plate_appearances(connection: Connection, game_ids: list[int]) -> int:
-    return connection.execute(
-        text(
-            """
-            SELECT COUNT(*)
-            FROM curated.plate_appearance
-            WHERE game_id = ANY(:game_ids)
-            """
-        ),
-        {"game_ids": game_ids},
-    ).scalar_one()
+def _seed_required_lookups(
+    connection: Connection,
+    *,
+    season_year: int,
+    game_type_code: str,
+    mlb_game_pk: int,
+    batter_mlb_id: int = 888011101,
+    pitcher_mlb_id: int = 888011102,
+    batter_team_code: str = "ZRA",
+    pitcher_team_code: str = "ZRB",
+    outcome_code: str = "ZRA_SINGLE",
+) -> dict[str, int | str]:
+    season_id = _insert_season(connection, season_year)
+    game_type_id = _insert_game_type(connection, game_type_code, "Zeta Regular")
+    game_id = _insert_game(
+        connection,
+        mlb_game_pk=mlb_game_pk,
+        season_id=season_id,
+        game_type_id=game_type_id,
+        official_game_date=date(season_year, 4, 8),
+    )
+    batter_id = _insert_player(connection, batter_mlb_id, "Ada Batter")
+    pitcher_id = _insert_player(connection, pitcher_mlb_id, "Pat Pitcher")
+    batter_team_id = _insert_team(connection, batter_team_code, "Zeta Aces")
+    pitcher_team_id = _insert_team(connection, pitcher_team_code, "Zeta Bats")
+    outcome_type_id = _insert_outcome_type(connection, outcome_code, "Single")
+    return {
+        "season_id": season_id,
+        "game_type_id": game_type_id,
+        "game_id": game_id,
+        "batter_id": batter_id,
+        "pitcher_id": pitcher_id,
+        "batter_team_id": batter_team_id,
+        "pitcher_team_id": pitcher_team_id,
+        "outcome_type_id": outcome_type_id,
+    }
 
 
-def test_empty_input_returns_zero_counts():
+def test_empty_input_returns_empty_list():
+    connection = MagicMock()
+
+    result = transform_plate_appearances(connection, [])
+
+    assert result == []
+    connection.execute.assert_not_called()
+    connection.commit.assert_not_called()
+    connection.rollback.assert_not_called()
+    connection.begin.assert_not_called()
+
+
+def test_one_extracted_plate_appearance_transforms_correctly():
+    engine = _create_engine()
+    mlb_game_pk = 900001001
+
+    try:
+        with _isolated_connection(engine) as connection:
+            ids = _seed_required_lookups(
+                connection,
+                season_year=2071,
+                game_type_code="ZRA",
+                mlb_game_pk=mlb_game_pk,
+            )
+
+            result = transform_plate_appearances(
+                connection,
+                [
+                    _statcast_plate_appearance(
+                        mlb_game_pk=mlb_game_pk,
+                        stand="S",
+                        p_throws="L",
+                    )
+                ],
+            )
+
+            assert result == [
+                CuratedPlateAppearance(
+                    game_id=ids["game_id"],
+                    at_bat_number=1,
+                    batter_id=ids["batter_id"],
+                    pitcher_id=ids["pitcher_id"],
+                    batter_team_id=ids["batter_team_id"],
+                    pitcher_team_id=ids["pitcher_team_id"],
+                    inning=1,
+                    inning_topbot="Top",
+                    outcome_type_id=ids["outcome_type_id"],
+                    stand="S",
+                    p_throws="L",
+                )
+            ]
+    finally:
+        engine.dispose()
+
+
+def test_mlb_game_pk_resolves_to_game_id():
+    engine = _create_engine()
+    mlb_game_pk = 900001002
+
+    try:
+        with _isolated_connection(engine) as connection:
+            ids = _seed_required_lookups(
+                connection,
+                season_year=2072,
+                game_type_code="ZRB",
+                mlb_game_pk=mlb_game_pk,
+                batter_team_code="ZRC",
+                pitcher_team_code="ZRD",
+                outcome_code="ZRB_WALK",
+            )
+
+            result = transform_plate_appearances(
+                connection,
+                [_statcast_plate_appearance(
+                    mlb_game_pk=mlb_game_pk,
+                    batter_team_code="ZRC",
+                    pitcher_team_code="ZRD",
+                    outcome_code="ZRB_WALK",
+                )],
+            )
+
+            assert len(result) == 1
+            assert result[0].game_id == ids["game_id"]
+    finally:
+        engine.dispose()
+
+
+def test_batter_mlb_id_resolves_to_player_id():
+    engine = _create_engine()
+    mlb_game_pk = 900001003
+
+    try:
+        with _isolated_connection(engine) as connection:
+            ids = _seed_required_lookups(
+                connection,
+                season_year=2073,
+                game_type_code="ZRC",
+                mlb_game_pk=mlb_game_pk,
+                batter_mlb_id=888011201,
+                batter_team_code="ZRE",
+                pitcher_team_code="ZRF",
+                outcome_code="ZRC_DOUBLE",
+            )
+
+            result = transform_plate_appearances(
+                connection,
+                [_statcast_plate_appearance(
+                    mlb_game_pk=mlb_game_pk,
+                    batter_id=888011201,
+                    batter_team_code="ZRE",
+                    pitcher_team_code="ZRF",
+                    outcome_code="ZRC_DOUBLE",
+                )],
+            )
+
+            assert len(result) == 1
+            assert result[0].batter_id == ids["batter_id"]
+    finally:
+        engine.dispose()
+
+
+def test_pitcher_mlb_id_resolves_to_player_id():
+    engine = _create_engine()
+    mlb_game_pk = 900001004
+
+    try:
+        with _isolated_connection(engine) as connection:
+            ids = _seed_required_lookups(
+                connection,
+                season_year=2074,
+                game_type_code="ZRD",
+                mlb_game_pk=mlb_game_pk,
+                pitcher_mlb_id=888011202,
+                batter_team_code="ZRG",
+                pitcher_team_code="ZRH",
+                outcome_code="ZRD_TRIPLE",
+            )
+
+            result = transform_plate_appearances(
+                connection,
+                [_statcast_plate_appearance(
+                    mlb_game_pk=mlb_game_pk,
+                    pitcher_id=888011202,
+                    batter_team_code="ZRG",
+                    pitcher_team_code="ZRH",
+                    outcome_code="ZRD_TRIPLE",
+                )],
+            )
+
+            assert len(result) == 1
+            assert result[0].pitcher_id == ids["pitcher_id"]
+    finally:
+        engine.dispose()
+
+
+def test_batter_team_code_resolves_to_team_id():
+    engine = _create_engine()
+    mlb_game_pk = 900001005
+
+    try:
+        with _isolated_connection(engine) as connection:
+            ids = _seed_required_lookups(
+                connection,
+                season_year=2075,
+                game_type_code="ZRE",
+                mlb_game_pk=mlb_game_pk,
+                batter_team_code="ZRI",
+                pitcher_team_code="ZRJ",
+                outcome_code="ZRE_HR",
+            )
+
+            result = transform_plate_appearances(
+                connection,
+                [_statcast_plate_appearance(
+                    mlb_game_pk=mlb_game_pk,
+                    batter_team_code="ZRI",
+                    pitcher_team_code="ZRJ",
+                    outcome_code="ZRE_HR",
+                )],
+            )
+
+            assert len(result) == 1
+            assert result[0].batter_team_id == ids["batter_team_id"]
+    finally:
+        engine.dispose()
+
+
+def test_pitcher_team_code_resolves_to_team_id():
+    engine = _create_engine()
+    mlb_game_pk = 900001006
+
+    try:
+        with _isolated_connection(engine) as connection:
+            ids = _seed_required_lookups(
+                connection,
+                season_year=2076,
+                game_type_code="ZRF",
+                mlb_game_pk=mlb_game_pk,
+                batter_team_code="ZRK",
+                pitcher_team_code="ZRL",
+                outcome_code="ZRF_SO",
+            )
+
+            result = transform_plate_appearances(
+                connection,
+                [_statcast_plate_appearance(
+                    mlb_game_pk=mlb_game_pk,
+                    batter_team_code="ZRK",
+                    pitcher_team_code="ZRL",
+                    outcome_code="ZRF_SO",
+                )],
+            )
+
+            assert len(result) == 1
+            assert result[0].pitcher_team_id == ids["pitcher_team_id"]
+    finally:
+        engine.dispose()
+
+
+def test_non_null_outcome_code_resolves_to_outcome_type_id():
+    engine = _create_engine()
+    mlb_game_pk = 900001007
+
+    try:
+        with _isolated_connection(engine) as connection:
+            ids = _seed_required_lookups(
+                connection,
+                season_year=2077,
+                game_type_code="ZRG",
+                mlb_game_pk=mlb_game_pk,
+                batter_team_code="ZRM",
+                pitcher_team_code="ZRN",
+                outcome_code="ZRG_FO",
+            )
+
+            result = transform_plate_appearances(
+                connection,
+                [_statcast_plate_appearance(
+                    mlb_game_pk=mlb_game_pk,
+                    batter_team_code="ZRM",
+                    pitcher_team_code="ZRN",
+                    outcome_code="ZRG_FO",
+                )],
+            )
+
+            assert len(result) == 1
+            assert result[0].outcome_type_id == ids["outcome_type_id"]
+    finally:
+        engine.dispose()
+
+
+def test_null_outcome_code_produces_none_outcome_type_id():
+    engine = _create_engine()
+    mlb_game_pk = 900001008
+
+    try:
+        with _isolated_connection(engine) as connection:
+            _seed_required_lookups(
+                connection,
+                season_year=2078,
+                game_type_code="ZRH",
+                mlb_game_pk=mlb_game_pk,
+                batter_team_code="ZRO",
+                pitcher_team_code="ZRP",
+                outcome_code="ZRH_UNUSED",
+            )
+
+            result = transform_plate_appearances(
+                connection,
+                [_statcast_plate_appearance(
+                    mlb_game_pk=mlb_game_pk,
+                    batter_team_code="ZRO",
+                    pitcher_team_code="ZRP",
+                    outcome_code=None,
+                )],
+            )
+
+            assert len(result) == 1
+            assert result[0].outcome_type_id is None
+    finally:
+        engine.dispose()
+
+
+def test_missing_game_raises_value_error():
+    engine = _create_engine()
+    missing_game_pk = 900001099
+
+    try:
+        with _isolated_connection(engine) as connection:
+            season_id = _insert_season(connection, 2079)
+            game_type_id = _insert_game_type(connection, "ZRI", "Zeta Regular")
+            _insert_game(
+                connection,
+                mlb_game_pk=900001009,
+                season_id=season_id,
+                game_type_id=game_type_id,
+                official_game_date=date(2079, 4, 8),
+            )
+            _insert_player(connection, 888011101, "Ada Batter")
+            _insert_player(connection, 888011102, "Pat Pitcher")
+            _insert_team(connection, "ZRQ", "Zeta Aces")
+            _insert_team(connection, "ZRR", "Zeta Bats")
+            _insert_outcome_type(connection, "ZRI_SINGLE", "Single")
+
+            with pytest.raises(
+                ValueError,
+                match=rf"No curated game found for MLB game PK {missing_game_pk}",
+            ):
+                transform_plate_appearances(
+                    connection,
+                    [_statcast_plate_appearance(
+                        mlb_game_pk=missing_game_pk,
+                        batter_team_code="ZRQ",
+                        pitcher_team_code="ZRR",
+                        outcome_code="ZRI_SINGLE",
+                    )],
+                )
+    finally:
+        engine.dispose()
+
+
+def test_missing_batter_raises_value_error():
+    engine = _create_engine()
+    mlb_game_pk = 900001010
+    missing_batter_id = 888011999
+
+    try:
+        with _isolated_connection(engine) as connection:
+            _seed_required_lookups(
+                connection,
+                season_year=2080,
+                game_type_code="ZRJ",
+                mlb_game_pk=mlb_game_pk,
+                batter_team_code="ZRS",
+                pitcher_team_code="ZRT",
+                outcome_code="ZRJ_SINGLE",
+            )
+
+            with pytest.raises(
+                ValueError,
+                match=(
+                    rf"No curated player found for MLB player ID "
+                    rf"{missing_batter_id}"
+                ),
+            ):
+                transform_plate_appearances(
+                    connection,
+                    [_statcast_plate_appearance(
+                        mlb_game_pk=mlb_game_pk,
+                        batter_id=missing_batter_id,
+                        batter_team_code="ZRS",
+                        pitcher_team_code="ZRT",
+                        outcome_code="ZRJ_SINGLE",
+                    )],
+                )
+    finally:
+        engine.dispose()
+
+
+def test_missing_pitcher_raises_value_error():
+    engine = _create_engine()
+    mlb_game_pk = 900001011
+    missing_pitcher_id = 888011998
+
+    try:
+        with _isolated_connection(engine) as connection:
+            _seed_required_lookups(
+                connection,
+                season_year=2081,
+                game_type_code="ZRK",
+                mlb_game_pk=mlb_game_pk,
+                batter_team_code="ZRU",
+                pitcher_team_code="ZRV",
+                outcome_code="ZRK_SINGLE",
+            )
+
+            with pytest.raises(
+                ValueError,
+                match=(
+                    rf"No curated player found for MLB player ID "
+                    rf"{missing_pitcher_id}"
+                ),
+            ):
+                transform_plate_appearances(
+                    connection,
+                    [_statcast_plate_appearance(
+                        mlb_game_pk=mlb_game_pk,
+                        pitcher_id=missing_pitcher_id,
+                        batter_team_code="ZRU",
+                        pitcher_team_code="ZRV",
+                        outcome_code="ZRK_SINGLE",
+                    )],
+                )
+    finally:
+        engine.dispose()
+
+
+def test_missing_batter_team_raises_value_error():
+    engine = _create_engine()
+    mlb_game_pk = 900001012
+    missing_team_code = "ZZ_MISS_BAT"
+
+    try:
+        with _isolated_connection(engine) as connection:
+            _seed_required_lookups(
+                connection,
+                season_year=2082,
+                game_type_code="ZRL",
+                mlb_game_pk=mlb_game_pk,
+                batter_team_code="ZRW",
+                pitcher_team_code="ZRX",
+                outcome_code="ZRL_SINGLE",
+            )
+
+            with pytest.raises(
+                ValueError,
+                match=rf"No curated team found for team code {missing_team_code}",
+            ):
+                transform_plate_appearances(
+                    connection,
+                    [_statcast_plate_appearance(
+                        mlb_game_pk=mlb_game_pk,
+                        batter_team_code=missing_team_code,
+                        pitcher_team_code="ZRX",
+                        outcome_code="ZRL_SINGLE",
+                    )],
+                )
+    finally:
+        engine.dispose()
+
+
+def test_missing_pitcher_team_raises_value_error():
+    engine = _create_engine()
+    mlb_game_pk = 900001013
+    missing_team_code = "ZZ_MISS_PIT"
+
+    try:
+        with _isolated_connection(engine) as connection:
+            _seed_required_lookups(
+                connection,
+                season_year=2083,
+                game_type_code="ZRM",
+                mlb_game_pk=mlb_game_pk,
+                batter_team_code="ZRY",
+                pitcher_team_code="ZRZ",
+                outcome_code="ZRM_SINGLE",
+            )
+
+            with pytest.raises(
+                ValueError,
+                match=rf"No curated team found for team code {missing_team_code}",
+            ):
+                transform_plate_appearances(
+                    connection,
+                    [_statcast_plate_appearance(
+                        mlb_game_pk=mlb_game_pk,
+                        batter_team_code="ZRY",
+                        pitcher_team_code=missing_team_code,
+                        outcome_code="ZRM_SINGLE",
+                    )],
+                )
+    finally:
+        engine.dispose()
+
+
+def test_unknown_non_null_outcome_code_raises_value_error():
+    engine = _create_engine()
+    mlb_game_pk = 900001014
+    missing_outcome_code = "zzz_missing_outcome"
+
+    try:
+        with _isolated_connection(engine) as connection:
+            _seed_required_lookups(
+                connection,
+                season_year=2084,
+                game_type_code="ZRN",
+                mlb_game_pk=mlb_game_pk,
+                batter_team_code="ZSA",
+                pitcher_team_code="ZSB",
+                outcome_code="ZRN_SINGLE",
+            )
+
+            with pytest.raises(
+                ValueError,
+                match=(
+                    rf"No curated outcome type found for outcome code "
+                    rf"{missing_outcome_code}"
+                ),
+            ):
+                transform_plate_appearances(
+                    connection,
+                    [_statcast_plate_appearance(
+                        mlb_game_pk=mlb_game_pk,
+                        batter_team_code="ZSA",
+                        pitcher_team_code="ZSB",
+                        outcome_code=missing_outcome_code,
+                    )],
+                )
+    finally:
+        engine.dispose()
+
+
+def test_multiple_extracted_plate_appearances_transform_independently():
+    engine = _create_engine()
+
+    try:
+        with _isolated_connection(engine) as connection:
+            first = _seed_required_lookups(
+                connection,
+                season_year=2085,
+                game_type_code="ZRO",
+                mlb_game_pk=900001015,
+                batter_mlb_id=888011301,
+                pitcher_mlb_id=888011302,
+                batter_team_code="ZSC",
+                pitcher_team_code="ZSD",
+                outcome_code="ZRO_SINGLE",
+            )
+            second_game_id = _insert_game(
+                connection,
+                mlb_game_pk=900001016,
+                season_id=first["season_id"],
+                game_type_id=first["game_type_id"],
+                official_game_date=date(2085, 4, 9),
+            )
+            second_batter_id = _insert_player(connection, 888011303, "Bea Batter")
+            second_outcome_id = _insert_outcome_type(
+                connection,
+                "ZRO_WALK",
+                "Walk",
+            )
+
+            extracted = [
+                _statcast_plate_appearance(
+                    mlb_game_pk=900001015,
+                    at_bat_number=1,
+                    batter_id=888011301,
+                    pitcher_id=888011302,
+                    batter_team_code="ZSC",
+                    pitcher_team_code="ZSD",
+                    inning=1,
+                    inning_topbot="Top",
+                    stand="L",
+                    p_throws="R",
+                    outcome_code="ZRO_SINGLE",
+                ),
+                _statcast_plate_appearance(
+                    mlb_game_pk=900001016,
+                    at_bat_number=3,
+                    batter_id=888011303,
+                    pitcher_id=888011302,
+                    batter_team_code="ZSC",
+                    pitcher_team_code="ZSD",
+                    inning=8,
+                    inning_topbot="Bot",
+                    stand="R",
+                    p_throws="L",
+                    outcome_code="ZRO_WALK",
+                ),
+            ]
+
+            result = transform_plate_appearances(connection, extracted)
+
+            assert result == [
+                CuratedPlateAppearance(
+                    game_id=first["game_id"],
+                    at_bat_number=1,
+                    batter_id=first["batter_id"],
+                    pitcher_id=first["pitcher_id"],
+                    batter_team_id=first["batter_team_id"],
+                    pitcher_team_id=first["pitcher_team_id"],
+                    inning=1,
+                    inning_topbot="Top",
+                    outcome_type_id=first["outcome_type_id"],
+                    stand="L",
+                    p_throws="R",
+                ),
+                CuratedPlateAppearance(
+                    game_id=second_game_id,
+                    at_bat_number=3,
+                    batter_id=second_batter_id,
+                    pitcher_id=first["pitcher_id"],
+                    batter_team_id=first["batter_team_id"],
+                    pitcher_team_id=first["pitcher_team_id"],
+                    inning=8,
+                    inning_topbot="Bot",
+                    outcome_type_id=second_outcome_id,
+                    stand="R",
+                    p_throws="L",
+                ),
+            ]
+    finally:
+        engine.dispose()
+
+
+def test_transformation_does_not_manage_transactions():
+    engine = _create_engine()
+    mlb_game_pk = 900001017
+
+    try:
+        with _isolated_connection(engine) as connection:
+            _seed_required_lookups(
+                connection,
+                season_year=2086,
+                game_type_code="ZRP",
+                mlb_game_pk=mlb_game_pk,
+                batter_team_code="ZSE",
+                pitcher_team_code="ZSF",
+                outcome_code="ZRP_SINGLE",
+            )
+            connection.commit = MagicMock()
+            connection.rollback = MagicMock()
+
+            transform_plate_appearances(
+                connection,
+                [_statcast_plate_appearance(
+                    mlb_game_pk=mlb_game_pk,
+                    batter_team_code="ZSE",
+                    pitcher_team_code="ZSF",
+                    outcome_code="ZRP_SINGLE",
+                )],
+            )
+
+            connection.commit.assert_not_called()
+            connection.rollback.assert_not_called()
+    finally:
+        engine.dispose()
+
+
+def test_empty_load_returns_zero_counts():
     connection = MagicMock()
 
     result = load_plate_appearances(connection, [])
@@ -183,854 +899,155 @@ def test_empty_input_returns_zero_counts():
     connection.execute.assert_not_called()
     connection.commit.assert_not_called()
     connection.rollback.assert_not_called()
+    connection.begin.assert_not_called()
 
 
-def test_single_plate_appearance_is_inserted():
+def test_curated_plate_appearance_is_inserted():
     engine = _create_engine()
-    mlb_game_pk = 900000901
+    mlb_game_pk = 900001101
 
     try:
         with _isolated_connection(engine) as connection:
-            season_id = _insert_season(connection, 2059)
-            game_type_id = _insert_game_type(connection, "QA", "Q Regular")
-            game_id = _insert_game(
+            ids = _seed_required_lookups(
                 connection,
+                season_year=2091,
+                game_type_code="ZTA",
                 mlb_game_pk=mlb_game_pk,
-                season_id=season_id,
-                game_type_id=game_type_id,
-                official_game_date=date(2059, 4, 8),
+                batter_team_code="ZTA",
+                pitcher_team_code="ZTB",
+                outcome_code="ZTA_SINGLE",
             )
-            batter_id = _insert_player(connection, 888009101, "Ada Batter")
-            pitcher_id = _insert_player(connection, 888009102, "Pat Pitcher")
-            batter_team_id = _insert_team(connection, "ZQA", "Zeta Aces")
-            pitcher_team_id = _insert_team(connection, "ZQB", "Zeta Bats")
-            outcome_type_id = _insert_outcome_type(connection, "ZPA_SINGLE", "Single")
+            curated = _curated_plate_appearance(
+                game_id=ids["game_id"],
+                batter_id=ids["batter_id"],
+                pitcher_id=ids["pitcher_id"],
+                batter_team_id=ids["batter_team_id"],
+                pitcher_team_id=ids["pitcher_team_id"],
+                outcome_type_id=ids["outcome_type_id"],
+                stand="S",
+                p_throws="L",
+            )
 
-            result = load_plate_appearances(
-                connection,
-                [
-                    StatcastPlateAppearance(
-                        mlb_game_pk=mlb_game_pk,
-                        at_bat_number=1,
-                        batter_id=888009101,
-                        pitcher_id=888009102,
-                        batter_team_code="ZQA",
-                        pitcher_team_code="ZQB",
-                        inning=1,
-                        inning_topbot="Top",
-                        outcome_code="ZPA_SINGLE",
-                    )
-                ],
-            )
+            result = load_plate_appearances(connection, [curated])
 
             assert result == PlateAppearanceLoadResult(
                 plate_appearances_supplied=1,
                 plate_appearances_loaded=1,
             )
-            plate_appearance = _fetch_plate_appearance(connection, game_id, 1)
-            assert plate_appearance["game_id"] == game_id
-            assert plate_appearance["at_bat_number"] == 1
-            assert plate_appearance["batter_id"] == batter_id
-            assert plate_appearance["pitcher_id"] == pitcher_id
-            assert plate_appearance["batter_team_id"] == batter_team_id
-            assert plate_appearance["pitcher_team_id"] == pitcher_team_id
-            assert plate_appearance["inning"] == 1
-            assert plate_appearance["inning_topbot"] == "Top"
-            assert plate_appearance["outcome_type_id"] == outcome_type_id
-            assert plate_appearance["plate_appearance_id"] is not None
+            row = _fetch_plate_appearance(connection, ids["game_id"], 1)
+            assert row["game_id"] == ids["game_id"]
+            assert row["at_bat_number"] == 1
+            assert row["batter_id"] == ids["batter_id"]
+            assert row["pitcher_id"] == ids["pitcher_id"]
+            assert row["batter_team_id"] == ids["batter_team_id"]
+            assert row["pitcher_team_id"] == ids["pitcher_team_id"]
+            assert row["inning"] == 1
+            assert row["inning_topbot"] == "Top"
+            assert row["outcome_type_id"] == ids["outcome_type_id"]
+            assert row["stand"] == "S"
+            assert row["p_throws"] == "L"
+            assert row["plate_appearance_id"] is not None
     finally:
         engine.dispose()
 
 
-def test_multiple_plate_appearances_are_inserted():
+def test_upsert_updates_non_key_fields_and_preserves_plate_appearance_id():
     engine = _create_engine()
+    mlb_game_pk = 900001102
 
     try:
         with _isolated_connection(engine) as connection:
-            season_id = _insert_season(connection, 2058)
-            game_type_id = _insert_game_type(connection, "QB", "Q Regular")
-            game_id = _insert_game(
+            ids = _seed_required_lookups(
                 connection,
-                mlb_game_pk=900000902,
-                season_id=season_id,
-                game_type_id=game_type_id,
-                official_game_date=date(2058, 4, 8),
-            )
-            batter_id = _insert_player(connection, 888009103, "Ada Batter")
-            pitcher_id = _insert_player(connection, 888009104, "Pat Pitcher")
-            batter_team_id = _insert_team(connection, "ZQC", "Zeta Cats")
-            pitcher_team_id = _insert_team(connection, "ZQD", "Zeta Dogs")
-
-            result = load_plate_appearances(
-                connection,
-                [
-                    StatcastPlateAppearance(
-                        mlb_game_pk=900000902,
-                        at_bat_number=1,
-                        batter_id=888009103,
-                        pitcher_id=888009104,
-                        batter_team_code="ZQC",
-                        pitcher_team_code="ZQD",
-                        inning=1,
-                        inning_topbot="Top",
-                        outcome_code=None,
-                    ),
-                    StatcastPlateAppearance(
-                        mlb_game_pk=900000902,
-                        at_bat_number=2,
-                        batter_id=888009103,
-                        pitcher_id=888009104,
-                        batter_team_code="ZQD",
-                        pitcher_team_code="ZQC",
-                        inning=1,
-                        inning_topbot="Bot",
-                        outcome_code=None,
-                    ),
-                ],
-            )
-
-            assert result == PlateAppearanceLoadResult(
-                plate_appearances_supplied=2,
-                plate_appearances_loaded=2,
-            )
-            assert _count_plate_appearances(connection, [game_id]) == 2
-            first = _fetch_plate_appearance(connection, game_id, 1)
-            second = _fetch_plate_appearance(connection, game_id, 2)
-            assert first["batter_id"] == batter_id
-            assert first["pitcher_id"] == pitcher_id
-            assert first["batter_team_id"] == batter_team_id
-            assert first["pitcher_team_id"] == pitcher_team_id
-            assert second["batter_team_id"] == pitcher_team_id
-            assert second["pitcher_team_id"] == batter_team_id
-            assert second["inning_topbot"] == "Bot"
-    finally:
-        engine.dispose()
-
-
-def test_duplicate_supplied_natural_keys_use_last_record():
-    engine = _create_engine()
-    mlb_game_pk = 900000903
-
-    try:
-        with _isolated_connection(engine) as connection:
-            season_id = _insert_season(connection, 2057)
-            game_type_id = _insert_game_type(connection, "QC", "Q Regular")
-            game_id = _insert_game(
-                connection,
+                season_year=2092,
+                game_type_code="ZTB",
                 mlb_game_pk=mlb_game_pk,
-                season_id=season_id,
-                game_type_id=game_type_id,
-                official_game_date=date(2057, 4, 8),
+                batter_mlb_id=888012101,
+                pitcher_mlb_id=888012102,
+                batter_team_code="ZTC",
+                pitcher_team_code="ZTD",
+                outcome_code="ZTB_SINGLE",
             )
-            first_batter_id = _insert_player(connection, 888009105, "Ada Batter")
-            second_batter_id = _insert_player(connection, 888009106, "Bea Batter")
-            pitcher_id = _insert_player(connection, 888009107, "Pat Pitcher")
-            batter_team_id = _insert_team(connection, "ZQE", "Zeta Eagles")
-            pitcher_team_id = _insert_team(connection, "ZQF", "Zeta Foxes")
-            first_outcome_id = _insert_outcome_type(connection, "ZPA_WALK", "Walk")
-            second_outcome_id = _insert_outcome_type(connection, "ZPA_HR", "Home Run")
-
-            result = load_plate_appearances(
-                connection,
-                [
-                    StatcastPlateAppearance(
-                        mlb_game_pk=mlb_game_pk,
-                        at_bat_number=1,
-                        batter_id=888009105,
-                        pitcher_id=888009107,
-                        batter_team_code="ZQE",
-                        pitcher_team_code="ZQF",
-                        inning=1,
-                        inning_topbot="Top",
-                        outcome_code="ZPA_WALK",
-                    ),
-                    StatcastPlateAppearance(
-                        mlb_game_pk=mlb_game_pk,
-                        at_bat_number=1,
-                        batter_id=888009106,
-                        pitcher_id=888009107,
-                        batter_team_code="ZQE",
-                        pitcher_team_code="ZQF",
-                        inning=3,
-                        inning_topbot="Bot",
-                        outcome_code="ZPA_HR",
-                    ),
-                ],
+            other_batter_id = _insert_player(connection, 888012103, "Bea Batter")
+            other_outcome_id = _insert_outcome_type(connection, "ZTB_WALK", "Walk")
+            original = _curated_plate_appearance(
+                game_id=ids["game_id"],
+                batter_id=ids["batter_id"],
+                pitcher_id=ids["pitcher_id"],
+                batter_team_id=ids["batter_team_id"],
+                pitcher_team_id=ids["pitcher_team_id"],
+                outcome_type_id=ids["outcome_type_id"],
+                stand="L",
+                p_throws="R",
             )
 
-            assert result == PlateAppearanceLoadResult(
-                plate_appearances_supplied=2,
-                plate_appearances_loaded=2,
+            load_plate_appearances(connection, [original])
+            original_id = _fetch_plate_appearance(
+                connection, ids["game_id"], 1
+            )["plate_appearance_id"]
+
+            updated = _curated_plate_appearance(
+                game_id=ids["game_id"],
+                batter_id=other_batter_id,
+                pitcher_id=ids["pitcher_id"],
+                batter_team_id=ids["batter_team_id"],
+                pitcher_team_id=ids["pitcher_team_id"],
+                inning=3,
+                inning_topbot="Bot",
+                outcome_type_id=other_outcome_id,
+                stand="R",
+                p_throws="L",
             )
-            assert _count_plate_appearances(connection, [game_id]) == 1
-            plate_appearance = _fetch_plate_appearance(connection, game_id, 1)
-            assert plate_appearance["batter_id"] == second_batter_id
-            assert plate_appearance["batter_id"] != first_batter_id
-            assert plate_appearance["pitcher_id"] == pitcher_id
-            assert plate_appearance["batter_team_id"] == batter_team_id
-            assert plate_appearance["pitcher_team_id"] == pitcher_team_id
-            assert plate_appearance["inning"] == 3
-            assert plate_appearance["inning_topbot"] == "Bot"
-            assert plate_appearance["outcome_type_id"] == second_outcome_id
-            assert plate_appearance["outcome_type_id"] != first_outcome_id
-    finally:
-        engine.dispose()
-
-
-def test_load_result_counts_include_duplicates():
-    engine = _create_engine()
-
-    try:
-        with _isolated_connection(engine) as connection:
-            season_id = _insert_season(connection, 2056)
-            game_type_id = _insert_game_type(connection, "QD", "Q Regular")
-            game_id = _insert_game(
-                connection,
-                mlb_game_pk=900000904,
-                season_id=season_id,
-                game_type_id=game_type_id,
-                official_game_date=date(2056, 4, 8),
-            )
-            _insert_player(connection, 888009108, "Ada Batter")
-            _insert_player(connection, 888009109, "Pat Pitcher")
-            _insert_team(connection, "ZQG", "Zeta Giants")
-            _insert_team(connection, "ZQH", "Zeta Hawks")
-
-            result = load_plate_appearances(
-                connection,
-                [
-                    StatcastPlateAppearance(
-                        mlb_game_pk=900000904,
-                        at_bat_number=1,
-                        batter_id=888009108,
-                        pitcher_id=888009109,
-                        batter_team_code="ZQG",
-                        pitcher_team_code="ZQH",
-                        inning=1,
-                        inning_topbot="Top",
-                        outcome_code=None,
-                    ),
-                    StatcastPlateAppearance(
-                        mlb_game_pk=900000904,
-                        at_bat_number=2,
-                        batter_id=888009108,
-                        pitcher_id=888009109,
-                        batter_team_code="ZQG",
-                        pitcher_team_code="ZQH",
-                        inning=1,
-                        inning_topbot="Top",
-                        outcome_code=None,
-                    ),
-                    StatcastPlateAppearance(
-                        mlb_game_pk=900000904,
-                        at_bat_number=1,
-                        batter_id=888009108,
-                        pitcher_id=888009109,
-                        batter_team_code="ZQG",
-                        pitcher_team_code="ZQH",
-                        inning=2,
-                        inning_topbot="Top",
-                        outcome_code=None,
-                    ),
-                ],
-            )
-
-            assert result == PlateAppearanceLoadResult(
-                plate_appearances_supplied=3,
-                plate_appearances_loaded=3,
-            )
-            assert _count_plate_appearances(connection, [game_id]) == 2
-            assert _fetch_plate_appearance(connection, game_id, 1)["inning"] == 2
-    finally:
-        engine.dispose()
-
-
-def test_existing_plate_appearance_id_is_preserved_when_reloaded():
-    engine = _create_engine()
-    mlb_game_pk = 900000905
-
-    try:
-        with _isolated_connection(engine) as connection:
-            season_id = _insert_season(connection, 2055)
-            game_type_id = _insert_game_type(connection, "QE", "Q Regular")
-            game_id = _insert_game(
-                connection,
-                mlb_game_pk=mlb_game_pk,
-                season_id=season_id,
-                game_type_id=game_type_id,
-                official_game_date=date(2055, 4, 8),
-            )
-            _insert_player(connection, 888009110, "Ada Batter")
-            _insert_player(connection, 888009111, "Pat Pitcher")
-            _insert_team(connection, "ZQI", "Zeta Irons")
-            _insert_team(connection, "ZQJ", "Zeta Jays")
-
-            load_plate_appearances(
-                connection,
-                [
-                    StatcastPlateAppearance(
-                        mlb_game_pk=mlb_game_pk,
-                        at_bat_number=1,
-                        batter_id=888009110,
-                        pitcher_id=888009111,
-                        batter_team_code="ZQI",
-                        pitcher_team_code="ZQJ",
-                        inning=1,
-                        inning_topbot="Top",
-                        outcome_code=None,
-                    )
-                ],
-            )
-            original = _fetch_plate_appearance(connection, game_id, 1)
-
-            result = load_plate_appearances(
-                connection,
-                [
-                    StatcastPlateAppearance(
-                        mlb_game_pk=mlb_game_pk,
-                        at_bat_number=1,
-                        batter_id=888009110,
-                        pitcher_id=888009111,
-                        batter_team_code="ZQI",
-                        pitcher_team_code="ZQJ",
-                        inning=4,
-                        inning_topbot="Bot",
-                        outcome_code=None,
-                    )
-                ],
-            )
-            updated = _fetch_plate_appearance(connection, game_id, 1)
+            result = load_plate_appearances(connection, [updated])
 
             assert result == PlateAppearanceLoadResult(
                 plate_appearances_supplied=1,
                 plate_appearances_loaded=1,
             )
-            assert updated["plate_appearance_id"] == original["plate_appearance_id"]
-            assert updated["game_id"] == game_id
-            assert updated["at_bat_number"] == 1
-            assert _count_plate_appearances(connection, [game_id]) == 1
+            row = _fetch_plate_appearance(connection, ids["game_id"], 1)
+            assert row["plate_appearance_id"] == original_id
+            assert row["game_id"] == ids["game_id"]
+            assert row["at_bat_number"] == 1
+            assert row["batter_id"] == other_batter_id
+            assert row["inning"] == 3
+            assert row["inning_topbot"] == "Bot"
+            assert row["outcome_type_id"] == other_outcome_id
+            assert row["stand"] == "R"
+            assert row["p_throws"] == "L"
     finally:
         engine.dispose()
 
 
-def test_existing_row_is_updated_on_natural_key_conflict():
+def test_load_does_not_manage_transactions():
     engine = _create_engine()
-    mlb_game_pk = 900000906
+    mlb_game_pk = 900001103
 
     try:
         with _isolated_connection(engine) as connection:
-            season_id = _insert_season(connection, 2054)
-            game_type_id = _insert_game_type(connection, "QF", "Q Regular")
-            game_id = _insert_game(
+            ids = _seed_required_lookups(
                 connection,
+                season_year=2093,
+                game_type_code="ZTC",
                 mlb_game_pk=mlb_game_pk,
-                season_id=season_id,
-                game_type_id=game_type_id,
-                official_game_date=date(2054, 4, 8),
+                batter_team_code="ZTE",
+                pitcher_team_code="ZTF",
+                outcome_code="ZTC_SINGLE",
             )
-            first_batter_id = _insert_player(connection, 888009112, "Ada Batter")
-            second_batter_id = _insert_player(connection, 888009113, "Bea Batter")
-            first_pitcher_id = _insert_player(connection, 888009114, "Pat Pitcher")
-            second_pitcher_id = _insert_player(connection, 888009115, "Quinn Pitcher")
-            first_batter_team_id = _insert_team(connection, "ZQK", "Zeta Kings")
-            second_batter_team_id = _insert_team(connection, "ZQL", "Zeta Lions")
-            first_pitcher_team_id = _insert_team(connection, "ZQM", "Zeta Moose")
-            second_pitcher_team_id = _insert_team(connection, "ZQN", "Zeta Nuts")
-            first_outcome_id = _insert_outcome_type(connection, "ZPA_OUT", "Out")
-            second_outcome_id = _insert_outcome_type(connection, "ZPA_HIT", "Hit")
-
-            load_plate_appearances(
-                connection,
-                [
-                    StatcastPlateAppearance(
-                        mlb_game_pk=mlb_game_pk,
-                        at_bat_number=1,
-                        batter_id=888009112,
-                        pitcher_id=888009114,
-                        batter_team_code="ZQK",
-                        pitcher_team_code="ZQM",
-                        inning=1,
-                        inning_topbot="Top",
-                        outcome_code="ZPA_OUT",
-                    )
-                ],
-            )
-            original = _fetch_plate_appearance(connection, game_id, 1)
-            assert original["batter_id"] == first_batter_id
-            assert original["pitcher_id"] == first_pitcher_id
-            assert original["batter_team_id"] == first_batter_team_id
-            assert original["pitcher_team_id"] == first_pitcher_team_id
-            assert original["outcome_type_id"] == first_outcome_id
-
-            result = load_plate_appearances(
-                connection,
-                [
-                    StatcastPlateAppearance(
-                        mlb_game_pk=mlb_game_pk,
-                        at_bat_number=1,
-                        batter_id=888009113,
-                        pitcher_id=888009115,
-                        batter_team_code="ZQL",
-                        pitcher_team_code="ZQN",
-                        inning=7,
-                        inning_topbot="Bot",
-                        outcome_code="ZPA_HIT",
-                    )
-                ],
-            )
-            updated = _fetch_plate_appearance(connection, game_id, 1)
-
-            assert result == PlateAppearanceLoadResult(
-                plate_appearances_supplied=1,
-                plate_appearances_loaded=1,
-            )
-            assert updated["plate_appearance_id"] == original["plate_appearance_id"]
-            assert updated["batter_id"] == second_batter_id
-            assert updated["pitcher_id"] == second_pitcher_id
-            assert updated["batter_team_id"] == second_batter_team_id
-            assert updated["pitcher_team_id"] == second_pitcher_team_id
-            assert updated["inning"] == 7
-            assert updated["inning_topbot"] == "Bot"
-            assert updated["outcome_type_id"] == second_outcome_id
-    finally:
-        engine.dispose()
-
-
-def test_missing_game_raises_value_error():
-    engine = _create_engine()
-    mlb_game_pk = 900000907
-
-    try:
-        with _isolated_connection(engine) as connection:
-            _insert_player(connection, 888009116, "Ada Batter")
-            _insert_player(connection, 888009117, "Pat Pitcher")
-            _insert_team(connection, "ZQO", "Zeta Otters")
-            _insert_team(connection, "ZQP", "Zeta Pumas")
-
-            with pytest.raises(ValueError, match=str(mlb_game_pk)):
-                load_plate_appearances(
-                    connection,
-                    [
-                        StatcastPlateAppearance(
-                            mlb_game_pk=mlb_game_pk,
-                            at_bat_number=1,
-                            batter_id=888009116,
-                            pitcher_id=888009117,
-                            batter_team_code="ZQO",
-                            pitcher_team_code="ZQP",
-                            inning=1,
-                            inning_topbot="Top",
-                            outcome_code=None,
-                        )
-                    ],
-                )
-    finally:
-        engine.dispose()
-
-
-def test_missing_batter_raises_value_error():
-    engine = _create_engine()
-    mlb_game_pk = 900000908
-
-    try:
-        with _isolated_connection(engine) as connection:
-            season_id = _insert_season(connection, 2053)
-            game_type_id = _insert_game_type(connection, "QG", "Q Regular")
-            game_id = _insert_game(
-                connection,
-                mlb_game_pk=mlb_game_pk,
-                season_id=season_id,
-                game_type_id=game_type_id,
-                official_game_date=date(2053, 4, 8),
-            )
-            _insert_player(connection, 888009118, "Pat Pitcher")
-            _insert_team(connection, "ZQQ", "Zeta Quails")
-            _insert_team(connection, "ZQR", "Zeta Rams")
-
-            with pytest.raises(ValueError, match="888009999"):
-                load_plate_appearances(
-                    connection,
-                    [
-                        StatcastPlateAppearance(
-                            mlb_game_pk=mlb_game_pk,
-                            at_bat_number=1,
-                            batter_id=888009999,
-                            pitcher_id=888009118,
-                            batter_team_code="ZQQ",
-                            pitcher_team_code="ZQR",
-                            inning=1,
-                            inning_topbot="Top",
-                            outcome_code=None,
-                        )
-                    ],
-                )
-
-            assert _count_plate_appearances(connection, [game_id]) == 0
-    finally:
-        engine.dispose()
-
-
-def test_missing_pitcher_raises_value_error():
-    engine = _create_engine()
-    mlb_game_pk = 900000909
-
-    try:
-        with _isolated_connection(engine) as connection:
-            season_id = _insert_season(connection, 2052)
-            game_type_id = _insert_game_type(connection, "QH", "Q Regular")
-            game_id = _insert_game(
-                connection,
-                mlb_game_pk=mlb_game_pk,
-                season_id=season_id,
-                game_type_id=game_type_id,
-                official_game_date=date(2052, 4, 8),
-            )
-            _insert_player(connection, 888009119, "Ada Batter")
-            _insert_team(connection, "ZQS", "Zeta Seals")
-            _insert_team(connection, "ZQT", "Zeta Tigers")
-
-            with pytest.raises(ValueError, match="888009998"):
-                load_plate_appearances(
-                    connection,
-                    [
-                        StatcastPlateAppearance(
-                            mlb_game_pk=mlb_game_pk,
-                            at_bat_number=1,
-                            batter_id=888009119,
-                            pitcher_id=888009998,
-                            batter_team_code="ZQS",
-                            pitcher_team_code="ZQT",
-                            inning=1,
-                            inning_topbot="Top",
-                            outcome_code=None,
-                        )
-                    ],
-                )
-
-            assert _count_plate_appearances(connection, [game_id]) == 0
-    finally:
-        engine.dispose()
-
-
-def test_missing_batter_team_raises_value_error():
-    engine = _create_engine()
-    mlb_game_pk = 900000910
-
-    try:
-        with _isolated_connection(engine) as connection:
-            season_id = _insert_season(connection, 2051)
-            game_type_id = _insert_game_type(connection, "QI", "Q Regular")
-            game_id = _insert_game(
-                connection,
-                mlb_game_pk=mlb_game_pk,
-                season_id=season_id,
-                game_type_id=game_type_id,
-                official_game_date=date(2051, 4, 8),
-            )
-            _insert_player(connection, 888009120, "Ada Batter")
-            _insert_player(connection, 888009121, "Pat Pitcher")
-            _insert_team(connection, "ZQU", "Zeta Unicorns")
-
-            with pytest.raises(ValueError, match="MISSING_BATTER_TEAM"):
-                load_plate_appearances(
-                    connection,
-                    [
-                        StatcastPlateAppearance(
-                            mlb_game_pk=mlb_game_pk,
-                            at_bat_number=1,
-                            batter_id=888009120,
-                            pitcher_id=888009121,
-                            batter_team_code="MISSING_BATTER_TEAM",
-                            pitcher_team_code="ZQU",
-                            inning=1,
-                            inning_topbot="Top",
-                            outcome_code=None,
-                        )
-                    ],
-                )
-
-            assert _count_plate_appearances(connection, [game_id]) == 0
-    finally:
-        engine.dispose()
-
-
-def test_missing_pitcher_team_raises_value_error():
-    engine = _create_engine()
-    mlb_game_pk = 900000911
-
-    try:
-        with _isolated_connection(engine) as connection:
-            season_id = _insert_season(connection, 2050)
-            game_type_id = _insert_game_type(connection, "QJ", "Q Regular")
-            game_id = _insert_game(
-                connection,
-                mlb_game_pk=mlb_game_pk,
-                season_id=season_id,
-                game_type_id=game_type_id,
-                official_game_date=date(2050, 4, 8),
-            )
-            _insert_player(connection, 888009122, "Ada Batter")
-            _insert_player(connection, 888009123, "Pat Pitcher")
-            _insert_team(connection, "ZQV", "Zeta Vipers")
-
-            with pytest.raises(ValueError, match="MISSING_PITCHER_TEAM"):
-                load_plate_appearances(
-                    connection,
-                    [
-                        StatcastPlateAppearance(
-                            mlb_game_pk=mlb_game_pk,
-                            at_bat_number=1,
-                            batter_id=888009122,
-                            pitcher_id=888009123,
-                            batter_team_code="ZQV",
-                            pitcher_team_code="MISSING_PITCHER_TEAM",
-                            inning=1,
-                            inning_topbot="Top",
-                            outcome_code=None,
-                        )
-                    ],
-                )
-
-            assert _count_plate_appearances(connection, [game_id]) == 0
-    finally:
-        engine.dispose()
-
-
-def test_null_outcome_code_inserts_null_outcome_type_id():
-    engine = _create_engine()
-    mlb_game_pk = 900000912
-
-    try:
-        with _isolated_connection(engine) as connection:
-            season_id = _insert_season(connection, 2049)
-            game_type_id = _insert_game_type(connection, "QK", "Q Regular")
-            game_id = _insert_game(
-                connection,
-                mlb_game_pk=mlb_game_pk,
-                season_id=season_id,
-                game_type_id=game_type_id,
-                official_game_date=date(2049, 4, 8),
-            )
-            _insert_player(connection, 888009124, "Ada Batter")
-            _insert_player(connection, 888009125, "Pat Pitcher")
-            _insert_team(connection, "ZQW", "Zeta Wolves")
-            _insert_team(connection, "ZQX", "Zeta X-Rays")
-
-            result = load_plate_appearances(
-                connection,
-                [
-                    StatcastPlateAppearance(
-                        mlb_game_pk=mlb_game_pk,
-                        at_bat_number=1,
-                        batter_id=888009124,
-                        pitcher_id=888009125,
-                        batter_team_code="ZQW",
-                        pitcher_team_code="ZQX",
-                        inning=1,
-                        inning_topbot="Top",
-                        outcome_code=None,
-                    )
-                ],
-            )
-
-            assert result == PlateAppearanceLoadResult(
-                plate_appearances_supplied=1,
-                plate_appearances_loaded=1,
-            )
-            assert _fetch_plate_appearance(connection, game_id, 1)["outcome_type_id"] is None
-    finally:
-        engine.dispose()
-
-
-def test_valid_outcome_code_resolves_to_outcome_type_id():
-    engine = _create_engine()
-    mlb_game_pk = 900000913
-
-    try:
-        with _isolated_connection(engine) as connection:
-            season_id = _insert_season(connection, 2048)
-            game_type_id = _insert_game_type(connection, "QL", "Q Regular")
-            game_id = _insert_game(
-                connection,
-                mlb_game_pk=mlb_game_pk,
-                season_id=season_id,
-                game_type_id=game_type_id,
-                official_game_date=date(2048, 4, 8),
-            )
-            _insert_player(connection, 888009126, "Ada Batter")
-            _insert_player(connection, 888009127, "Pat Pitcher")
-            _insert_team(connection, "ZQY", "Zeta Yaks")
-            _insert_team(connection, "ZQZ", "Zeta Zebras")
-            outcome_type_id = _insert_outcome_type(connection, "ZPA_DOUBLE", "Double")
-
-            result = load_plate_appearances(
-                connection,
-                [
-                    StatcastPlateAppearance(
-                        mlb_game_pk=mlb_game_pk,
-                        at_bat_number=1,
-                        batter_id=888009126,
-                        pitcher_id=888009127,
-                        batter_team_code="ZQY",
-                        pitcher_team_code="ZQZ",
-                        inning=2,
-                        inning_topbot="Bot",
-                        outcome_code="ZPA_DOUBLE",
-                    )
-                ],
-            )
-
-            assert result == PlateAppearanceLoadResult(
-                plate_appearances_supplied=1,
-                plate_appearances_loaded=1,
-            )
-            assert (
-                _fetch_plate_appearance(connection, game_id, 1)["outcome_type_id"]
-                == outcome_type_id
-            )
-    finally:
-        engine.dispose()
-
-
-def test_missing_outcome_code_raises_value_error():
-    engine = _create_engine()
-    mlb_game_pk = 900000914
-
-    try:
-        with _isolated_connection(engine) as connection:
-            season_id = _insert_season(connection, 2047)
-            game_type_id = _insert_game_type(connection, "QM", "Q Regular")
-            game_id = _insert_game(
-                connection,
-                mlb_game_pk=mlb_game_pk,
-                season_id=season_id,
-                game_type_id=game_type_id,
-                official_game_date=date(2047, 4, 8),
-            )
-            _insert_player(connection, 888009128, "Ada Batter")
-            _insert_player(connection, 888009129, "Pat Pitcher")
-            _insert_team(connection, "ZRA", "Zeta Rays")
-            _insert_team(connection, "ZRB", "Zeta Bears")
-
-            with pytest.raises(ValueError, match="MISSING_OUTCOME"):
-                load_plate_appearances(
-                    connection,
-                    [
-                        StatcastPlateAppearance(
-                            mlb_game_pk=mlb_game_pk,
-                            at_bat_number=1,
-                            batter_id=888009128,
-                            pitcher_id=888009129,
-                            batter_team_code="ZRA",
-                            pitcher_team_code="ZRB",
-                            inning=1,
-                            inning_topbot="Top",
-                            outcome_code="MISSING_OUTCOME",
-                        )
-                    ],
-                )
-
-            assert _count_plate_appearances(connection, [game_id]) == 0
-    finally:
-        engine.dispose()
-
-
-def test_missing_references_do_not_insert_plate_appearances():
-    engine = _create_engine()
-
-    try:
-        with _isolated_connection(engine) as connection:
-            season_id = _insert_season(connection, 2046)
-            game_type_id = _insert_game_type(connection, "QN", "Q Regular")
-            game_id = _insert_game(
-                connection,
-                mlb_game_pk=900000915,
-                season_id=season_id,
-                game_type_id=game_type_id,
-                official_game_date=date(2046, 4, 8),
-            )
-            _insert_player(connection, 888009130, "Ada Batter")
-            _insert_player(connection, 888009131, "Pat Pitcher")
-            _insert_team(connection, "ZRC", "Zeta Crows")
-            _insert_team(connection, "ZRD", "Zeta Ducks")
-
-            with pytest.raises(ValueError, match="900000916"):
-                load_plate_appearances(
-                    connection,
-                    [
-                        StatcastPlateAppearance(
-                            mlb_game_pk=900000915,
-                            at_bat_number=1,
-                            batter_id=888009130,
-                            pitcher_id=888009131,
-                            batter_team_code="ZRC",
-                            pitcher_team_code="ZRD",
-                            inning=1,
-                            inning_topbot="Top",
-                            outcome_code=None,
-                        ),
-                        StatcastPlateAppearance(
-                            mlb_game_pk=900000916,
-                            at_bat_number=1,
-                            batter_id=888009130,
-                            pitcher_id=888009131,
-                            batter_team_code="ZRC",
-                            pitcher_team_code="ZRD",
-                            inning=1,
-                            inning_topbot="Top",
-                            outcome_code=None,
-                        ),
-                    ],
-                )
-
-            assert _count_plate_appearances(connection, [game_id]) == 0
-    finally:
-        engine.dispose()
-
-
-def test_successful_load_does_not_commit_or_rollback():
-    engine = _create_engine()
-
-    try:
-        with _isolated_connection(engine) as connection:
-            season_id = _insert_season(connection, 2045)
-            game_type_id = _insert_game_type(connection, "QO", "Q Regular")
-            game_id = _insert_game(
-                connection,
-                mlb_game_pk=900000917,
-                season_id=season_id,
-                game_type_id=game_type_id,
-                official_game_date=date(2045, 4, 8),
-            )
-            _insert_player(connection, 888009132, "Ada Batter")
-            _insert_player(connection, 888009133, "Pat Pitcher")
-            _insert_team(connection, "ZRE", "Zeta Elks")
-            _insert_team(connection, "ZRF", "Zeta Finches")
             connection.commit = MagicMock()
             connection.rollback = MagicMock()
 
-            result = load_plate_appearances(
+            load_plate_appearances(
                 connection,
-                [
-                    StatcastPlateAppearance(
-                        mlb_game_pk=900000917,
-                        at_bat_number=1,
-                        batter_id=888009132,
-                        pitcher_id=888009133,
-                        batter_team_code="ZRE",
-                        pitcher_team_code="ZRF",
-                        inning=1,
-                        inning_topbot="Top",
-                        outcome_code=None,
-                    )
-                ],
+                [_curated_plate_appearance(
+                    game_id=ids["game_id"],
+                    batter_id=ids["batter_id"],
+                    pitcher_id=ids["pitcher_id"],
+                    batter_team_id=ids["batter_team_id"],
+                    pitcher_team_id=ids["pitcher_team_id"],
+                    outcome_type_id=ids["outcome_type_id"],
+                )],
             )
 
-            assert result == PlateAppearanceLoadResult(
-                plate_appearances_supplied=1,
-                plate_appearances_loaded=1,
-            )
-            _fetch_plate_appearance(connection, game_id, 1)
             connection.commit.assert_not_called()
             connection.rollback.assert_not_called()
     finally:

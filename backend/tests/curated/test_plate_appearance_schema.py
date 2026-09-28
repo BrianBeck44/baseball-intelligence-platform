@@ -9,8 +9,9 @@ from sqlalchemy import create_engine, text
 from app.core.config import settings
 
 
-PLATE_APPEARANCE_REVISION = "c9e2b7a15d04"
+PLATE_APPEARANCE_REVISION = "d8a1c4f27b90"
 PREVIOUS_REVISION = "f1a9c3e84b06"
+CREATE_TABLE_REVISION = "c9e2b7a15d04"
 BACKEND_DIR = Path(__file__).resolve().parents[2]
 
 
@@ -94,6 +95,8 @@ def test_plate_appearance_table_has_expected_columns():
                 "inning",
                 "inning_topbot",
                 "outcome_type_id",
+                "stand",
+                "p_throws",
             }
             assert columns["plate_appearance_id"]["data_type"] == "bigint"
             assert columns["game_id"]["data_type"] == "bigint"
@@ -106,6 +109,10 @@ def test_plate_appearance_table_has_expected_columns():
             assert columns["inning_topbot"]["data_type"] == "character varying"
             assert columns["inning_topbot"]["character_maximum_length"] == 3
             assert columns["outcome_type_id"]["data_type"] == "integer"
+            assert columns["stand"]["data_type"] == "character varying"
+            assert columns["stand"]["character_maximum_length"] == 1
+            assert columns["p_throws"]["data_type"] == "character varying"
+            assert columns["p_throws"]["character_maximum_length"] == 1
     finally:
         engine.dispose()
 
@@ -236,6 +243,8 @@ def test_required_plate_appearance_columns_are_not_null():
                 "pitcher_team_id",
                 "inning",
                 "inning_topbot",
+                "stand",
+                "p_throws",
             }
             assert all(row["is_nullable"] == "NO" for row in required.values())
     finally:
@@ -259,6 +268,62 @@ def test_inning_topbot_check_constraint_exists():
             assert "Top" in definition
             assert "Bot" in definition
     finally:
+        engine.dispose()
+
+
+def test_stand_and_p_throws_check_constraints_exist():
+    engine = _engine()
+    command.upgrade(_alembic_config(), PLATE_APPEARANCE_REVISION)
+
+    try:
+        with engine.connect() as connection:
+            constraints = {
+                row["conname"]: row for row in _fetch_constraints(connection)
+            }
+            assert "ck_plate_appearance_stand" in constraints
+            assert constraints["ck_plate_appearance_stand"]["contype"] == "c"
+            stand_definition = constraints["ck_plate_appearance_stand"]["definition"]
+            assert "stand" in stand_definition
+            assert "'L'" in stand_definition
+            assert "'R'" in stand_definition
+            assert "'S'" in stand_definition
+
+            assert "ck_plate_appearance_p_throws" in constraints
+            assert constraints["ck_plate_appearance_p_throws"]["contype"] == "c"
+            throws_definition = constraints["ck_plate_appearance_p_throws"][
+                "definition"
+            ]
+            assert "p_throws" in throws_definition
+            assert "'L'" in throws_definition
+            assert "'R'" in throws_definition
+    finally:
+        engine.dispose()
+
+
+def test_downgrade_removes_stand_and_p_throws():
+    engine = _engine()
+    config = _alembic_config()
+    command.upgrade(config, PLATE_APPEARANCE_REVISION)
+
+    try:
+        command.downgrade(config, CREATE_TABLE_REVISION)
+
+        with engine.connect() as connection:
+            assert _table_exists(connection) is True
+            columns = {
+                row["column_name"]: row for row in _fetch_columns(connection)
+            }
+            assert "stand" not in columns
+            assert "p_throws" not in columns
+            constraints = {
+                row["conname"]: row for row in _fetch_constraints(connection)
+            }
+            assert "ck_plate_appearance_stand" not in constraints
+            assert "ck_plate_appearance_p_throws" not in constraints
+            assert "pk_plate_appearance" in constraints
+            assert "uq_plate_appearance_game_at_bat" in constraints
+    finally:
+        command.upgrade(config, "head")
         engine.dispose()
 
 

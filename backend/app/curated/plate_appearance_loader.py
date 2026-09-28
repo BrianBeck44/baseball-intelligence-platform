@@ -9,6 +9,7 @@ from sqlalchemy.engine import Connection
 from app.curated.plate_appearance_data import (
     PlateAppearanceLoadResult,
     load_plate_appearances,
+    transform_plate_appearances,
 )
 from app.curated.statcast_plate_appearance_data import get_statcast_plate_appearances
 
@@ -22,15 +23,19 @@ class PlateAppearanceLoadOrchestrationResult:
 def load_plate_appearances_from_statcast(
     connection: Connection,
 ) -> PlateAppearanceLoadOrchestrationResult:
-    """Extract Statcast plate appearances and upsert them.
+    """Extract, transform, and upsert curated plate appearances.
 
-    The caller owns the transaction. Exceptions from extraction or
-    loading are not caught here.
+    The caller owns the transaction. Exceptions from extraction,
+    transformation, or loading are not caught here.
     """
     plate_appearances = get_statcast_plate_appearances(connection)
-    load_result: PlateAppearanceLoadResult = load_plate_appearances(
+    curated_plate_appearances = transform_plate_appearances(
         connection,
         plate_appearances,
+    )
+    load_result: PlateAppearanceLoadResult = load_plate_appearances(
+        connection,
+        curated_plate_appearances,
     )
     return PlateAppearanceLoadOrchestrationResult(
         plate_appearances_found=len(plate_appearances),
