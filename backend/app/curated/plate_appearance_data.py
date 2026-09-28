@@ -1,8 +1,8 @@
-"""Load Statcast plate appearances into curated.plate_appearance."""
+"""Transform extracted Statcast plate appearances and persist curated records."""
 
 from __future__ import annotations
 
-from collections.abc import Collection, Iterable
+from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass
 
 from sqlalchemy import MetaData, Table, select
@@ -13,16 +13,139 @@ from app.curated.statcast_plate_appearance_data import StatcastPlateAppearance
 
 
 @dataclass(frozen=True)
+class CuratedPlateAppearance:
+    game_id: int
+    at_bat_number: int
+    batter_id: int
+    pitcher_id: int
+    batter_team_id: int
+    pitcher_team_id: int
+    inning: int
+    inning_topbot: str
+    outcome_type_id: int | None
+    stand: str
+    p_throws: str
+
+
+@dataclass(frozen=True)
 class PlateAppearanceLoadResult:
     plate_appearances_supplied: int
     plate_appearances_loaded: int
 
 
+def transform_plate_appearances(
+    connection: Connection,
+    plate_appearances: Sequence[StatcastPlateAppearance],
+) -> list[CuratedPlateAppearance]:
+    """Resolve Statcast plate appearances to curated identifiers.
+
+    Lookups only; the caller owns the transaction. Missing required
+    curated rows raise ValueError. A null ``outcome_code`` becomes
+    ``outcome_type_id=None``.
+    """
+    if not plate_appearances:
+        return []
+
+    game_ids = _game_ids_by_mlb_game_pk(
+        connection,
+        {pa.mlb_game_pk for pa in plate_appearances},
+    )
+    missing_games = sorted(
+        {pa.mlb_game_pk for pa in plate_appearances} - game_ids.keys()
+    )
+    if missing_games:
+        raise ValueError(
+            "No curated game found for MLB game PK "
+            + ", ".join(str(game_pk) for game_pk in missing_games)
+        )
+
+    player_ids = _player_ids_by_mlb_player_id(
+        connection,
+        {pa.batter_id for pa in plate_appearances}
+        | {pa.pitcher_id for pa in plate_appearances},
+    )
+    missing_batters = sorted(
+        {pa.batter_id for pa in plate_appearances} - player_ids.keys()
+    )
+    if missing_batters:
+        raise ValueError(
+            "No curated player found for MLB player ID "
+            + ", ".join(str(player_id) for player_id in missing_batters)
+        )
+    missing_pitchers = sorted(
+        {pa.pitcher_id for pa in plate_appearances} - player_ids.keys()
+    )
+    if missing_pitchers:
+        raise ValueError(
+            "No curated player found for MLB player ID "
+            + ", ".join(str(player_id) for player_id in missing_pitchers)
+        )
+
+    team_ids = _team_ids_by_code(
+        connection,
+        {pa.batter_team_code for pa in plate_appearances}
+        | {pa.pitcher_team_code for pa in plate_appearances},
+    )
+    missing_batter_teams = sorted(
+        {pa.batter_team_code for pa in plate_appearances} - team_ids.keys()
+    )
+    if missing_batter_teams:
+        raise ValueError(
+            "No curated team found for team code "
+            + ", ".join(missing_batter_teams)
+        )
+    missing_pitcher_teams = sorted(
+        {pa.pitcher_team_code for pa in plate_appearances} - team_ids.keys()
+    )
+    if missing_pitcher_teams:
+        raise ValueError(
+            "No curated team found for team code "
+            + ", ".join(missing_pitcher_teams)
+        )
+
+    outcome_ids = _outcome_type_ids_by_code(
+        connection,
+        {pa.outcome_code for pa in plate_appearances},
+    )
+    missing_outcomes = sorted(
+        {
+            pa.outcome_code
+            for pa in plate_appearances
+            if pa.outcome_code is not None
+        }
+        - outcome_ids.keys()
+    )
+    if missing_outcomes:
+        raise ValueError(
+            "No curated outcome type found for outcome code "
+            + ", ".join(missing_outcomes)
+        )
+
+    return [
+        CuratedPlateAppearance(
+            game_id=game_ids[pa.mlb_game_pk],
+            at_bat_number=pa.at_bat_number,
+            batter_id=player_ids[pa.batter_id],
+            pitcher_id=player_ids[pa.pitcher_id],
+            batter_team_id=team_ids[pa.batter_team_code],
+            pitcher_team_id=team_ids[pa.pitcher_team_code],
+            inning=pa.inning,
+            inning_topbot=pa.inning_topbot,
+            outcome_type_id=(
+                None if pa.outcome_code is None else outcome_ids[pa.outcome_code]
+            ),
+            stand=pa.stand,
+            p_throws=pa.p_throws,
+        )
+        for pa in plate_appearances
+    ]
+
+
 def load_plate_appearances(
     connection: Connection,
-    plate_appearances: Collection[StatcastPlateAppearance],
+    plate_appearances: Collection[CuratedPlateAppearance],
 ) -> PlateAppearanceLoadResult:
-    """Upsert Statcast plate appearances into curated.plate_appearance.
+    """Upsert curated plate appearances into curated.plate_appearance.
 
     Conflict is resolved on ``(game_id, at_bat_number)``. Non-key fields
     are updated; ``plate_appearance_id`` is left unchanged. The caller
@@ -35,41 +158,21 @@ def load_plate_appearances(
             plate_appearances_loaded=0,
         )
 
-    unique_plate_appearances = _unique_plate_appearances(plate_appearances)
-    game_ids = _game_ids_by_mlb_game_pk(
-        connection,
-        {pa.mlb_game_pk for pa in unique_plate_appearances},
-    )
-    player_ids = _player_ids_by_mlb_player_id(
-        connection,
-        {pa.batter_id for pa in unique_plate_appearances}
-        | {pa.pitcher_id for pa in unique_plate_appearances},
-    )
-    team_ids = _team_ids_by_code(
-        connection,
-        {pa.batter_team_code for pa in unique_plate_appearances}
-        | {pa.pitcher_team_code for pa in unique_plate_appearances},
-    )
-    outcome_ids = _outcome_type_ids_by_code(
-        connection,
-        {pa.outcome_code for pa in unique_plate_appearances},
-    )
-
     rows = [
         {
-            "game_id": game_ids[pa.mlb_game_pk],
+            "game_id": pa.game_id,
             "at_bat_number": pa.at_bat_number,
-            "batter_id": player_ids[pa.batter_id],
-            "pitcher_id": player_ids[pa.pitcher_id],
-            "batter_team_id": team_ids[pa.batter_team_code],
-            "pitcher_team_id": team_ids[pa.pitcher_team_code],
+            "batter_id": pa.batter_id,
+            "pitcher_id": pa.pitcher_id,
+            "batter_team_id": pa.batter_team_id,
+            "pitcher_team_id": pa.pitcher_team_id,
             "inning": pa.inning,
             "inning_topbot": pa.inning_topbot,
-            "outcome_type_id": (
-                None if pa.outcome_code is None else outcome_ids[pa.outcome_code]
-            ),
+            "outcome_type_id": pa.outcome_type_id,
+            "stand": pa.stand,
+            "p_throws": pa.p_throws,
         }
-        for pa in unique_plate_appearances
+        for pa in plate_appearances
     ]
 
     table = _curated_table(connection, "plate_appearance")
@@ -84,6 +187,8 @@ def load_plate_appearances(
             "inning": statement.excluded.inning,
             "inning_topbot": statement.excluded.inning_topbot,
             "outcome_type_id": statement.excluded.outcome_type_id,
+            "stand": statement.excluded.stand,
+            "p_throws": statement.excluded.p_throws,
         },
     )
     connection.execute(statement)
@@ -91,17 +196,6 @@ def load_plate_appearances(
         plate_appearances_supplied=plate_appearances_supplied,
         plate_appearances_loaded=plate_appearances_supplied,
     )
-
-
-def _unique_plate_appearances(
-    plate_appearances: Collection[StatcastPlateAppearance],
-) -> list[StatcastPlateAppearance]:
-    by_key: dict[tuple[int, int], StatcastPlateAppearance] = {}
-    for plate_appearance in plate_appearances:
-        by_key[
-            (plate_appearance.mlb_game_pk, plate_appearance.at_bat_number)
-        ] = plate_appearance
-    return list(by_key.values())
 
 
 def _curated_table(connection: Connection, table_name: str) -> Table:
@@ -119,21 +213,16 @@ def _game_ids_by_mlb_game_pk(
     mlb_game_pks: Iterable[int],
 ) -> dict[int, int]:
     game_pks = set(mlb_game_pks)
+    if not game_pks:
+        return {}
+
     game = _curated_table(connection, "game")
     rows = connection.execute(
         select(game.c.mlb_game_pk, game.c.game_id).where(
             game.c.mlb_game_pk.in_(game_pks)
         )
     ).all()
-    mapping = {int(mlb_game_pk): int(game_id) for mlb_game_pk, game_id in rows}
-
-    missing = sorted(game_pks - mapping.keys())
-    if missing:
-        raise ValueError(
-            "No curated.game exists for mlb_game_pk="
-            + ", ".join(str(game_pk) for game_pk in missing)
-        )
-    return mapping
+    return {int(mlb_game_pk): int(game_id) for mlb_game_pk, game_id in rows}
 
 
 def _player_ids_by_mlb_player_id(
@@ -141,23 +230,18 @@ def _player_ids_by_mlb_player_id(
     mlb_player_ids: Iterable[int],
 ) -> dict[int, int]:
     player_ids = set(mlb_player_ids)
+    if not player_ids:
+        return {}
+
     player = _curated_table(connection, "player")
     rows = connection.execute(
         select(player.c.mlb_player_id, player.c.player_id).where(
             player.c.mlb_player_id.in_(player_ids)
         )
     ).all()
-    mapping = {
+    return {
         int(mlb_player_id): int(player_id) for mlb_player_id, player_id in rows
     }
-
-    missing = sorted(player_ids - mapping.keys())
-    if missing:
-        raise ValueError(
-            "No curated.player exists for mlb_player_id="
-            + ", ".join(str(player_id) for player_id in missing)
-        )
-    return mapping
 
 
 def _team_ids_by_code(
@@ -165,18 +249,14 @@ def _team_ids_by_code(
     team_codes: Iterable[str],
 ) -> dict[str, int]:
     codes = set(team_codes)
+    if not codes:
+        return {}
+
     team = _curated_table(connection, "team")
     rows = connection.execute(
         select(team.c.code, team.c.team_id).where(team.c.code.in_(codes))
     ).all()
-    mapping = {str(code): int(team_id) for code, team_id in rows}
-
-    missing = sorted(codes - mapping.keys())
-    if missing:
-        raise ValueError(
-            "No curated.team exists for code=" + ", ".join(missing)
-        )
-    return mapping
+    return {str(code): int(team_id) for code, team_id in rows}
 
 
 def _outcome_type_ids_by_code(
@@ -193,11 +273,4 @@ def _outcome_type_ids_by_code(
             outcome_type.c.code.in_(codes)
         )
     ).all()
-    mapping = {str(code): int(type_id) for code, type_id in rows}
-
-    missing = sorted(codes - mapping.keys())
-    if missing:
-        raise ValueError(
-            "No curated.outcome_type exists for code=" + ", ".join(missing)
-        )
-    return mapping
+    return {str(code): int(type_id) for code, type_id in rows}
