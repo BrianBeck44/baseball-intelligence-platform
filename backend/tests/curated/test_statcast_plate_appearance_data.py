@@ -46,6 +46,8 @@ def _insert_pitch(
     away_team: str | None = "BOS",
     inning: int | None = 1,
     inning_topbot: str | None = "Top",
+    stand: str | None = "L",
+    p_throws: str | None = "R",
     events: str | None = None,
 ) -> None:
     batch_id = create_ingestion_batch(
@@ -70,6 +72,8 @@ def _insert_pitch(
                 away_team,
                 inning,
                 inning_topbot,
+                stand,
+                p_throws,
                 events
             )
             VALUES (
@@ -83,6 +87,8 @@ def _insert_pitch(
                 :away_team,
                 :inning,
                 :inning_topbot,
+                :stand,
+                :p_throws,
                 :events
             )
             """
@@ -98,6 +104,8 @@ def _insert_pitch(
             "away_team": away_team,
             "inning": inning,
             "inning_topbot": inning_topbot,
+            "stand": stand,
+            "p_throws": p_throws,
             "events": events,
         },
     )
@@ -140,9 +148,49 @@ def test_single_plate_appearance_is_extracted():
                     pitcher_team_code="NYY",
                     inning=1,
                     inning_topbot="Top",
+                    stand="L",
+                    p_throws="R",
                     outcome_code="single",
                 )
             ]
+    finally:
+        engine.dispose()
+
+
+def test_plate_appearance_extracts_stand_and_p_throws():
+    engine = _create_engine()
+    game_pk = 900000871
+
+    try:
+        with _isolated_connection(engine) as connection:
+            _clear_statcast_pitches(connection)
+            _insert_pitch(
+                connection,
+                game_pk=game_pk,
+                stand="S",
+                p_throws="L",
+                events="single",
+            )
+
+            result = get_statcast_plate_appearances(connection)
+
+            assert result == [
+                StatcastPlateAppearance(
+                    mlb_game_pk=game_pk,
+                    at_bat_number=1,
+                    batter_id=1001,
+                    pitcher_id=2002,
+                    batter_team_code="BOS",
+                    pitcher_team_code="NYY",
+                    inning=1,
+                    inning_topbot="Top",
+                    stand="S",
+                    p_throws="L",
+                    outcome_code="single",
+                )
+            ]
+            assert result[0].stand in ("L", "R", "S")
+            assert result[0].p_throws in ("L", "R")
     finally:
         engine.dispose()
 
@@ -178,6 +226,52 @@ def test_multiple_pitches_in_one_plate_appearance_produce_one_result():
                     pitcher_team_code="NYY",
                     inning=1,
                     inning_topbot="Top",
+                    stand="L",
+                    p_throws="R",
+                    outcome_code="strikeout",
+                )
+            ]
+    finally:
+        engine.dispose()
+
+
+def test_identical_stand_and_p_throws_produce_one_plate_appearance():
+    engine = _create_engine()
+    game_pk = 900000872
+
+    try:
+        with _isolated_connection(engine) as connection:
+            _clear_statcast_pitches(connection)
+            _insert_pitch(
+                connection,
+                game_pk=game_pk,
+                pitch_number=1,
+                stand="R",
+                p_throws="L",
+            )
+            _insert_pitch(
+                connection,
+                game_pk=game_pk,
+                pitch_number=2,
+                stand="R",
+                p_throws="L",
+                events="strikeout",
+            )
+
+            result = get_statcast_plate_appearances(connection)
+
+            assert result == [
+                StatcastPlateAppearance(
+                    mlb_game_pk=game_pk,
+                    at_bat_number=1,
+                    batter_id=1001,
+                    pitcher_id=2002,
+                    batter_team_code="BOS",
+                    pitcher_team_code="NYY",
+                    inning=1,
+                    inning_topbot="Top",
+                    stand="R",
+                    p_throws="L",
                     outcome_code="strikeout",
                 )
             ]
@@ -218,6 +312,8 @@ def test_multiple_plate_appearances_are_extracted():
                     pitcher_team_code="NYY",
                     inning=1,
                     inning_topbot="Top",
+                    stand="L",
+                    p_throws="R",
                     outcome_code="walk",
                 ),
                 StatcastPlateAppearance(
@@ -229,6 +325,8 @@ def test_multiple_plate_appearances_are_extracted():
                     pitcher_team_code="NYY",
                     inning=1,
                     inning_topbot="Top",
+                    stand="L",
+                    p_throws="R",
                     outcome_code="home_run",
                 ),
             ]
@@ -267,6 +365,8 @@ def test_multiple_games_are_extracted():
                     pitcher_team_code="NYY",
                     inning=1,
                     inning_topbot="Top",
+                    stand="L",
+                    p_throws="R",
                     outcome_code="single",
                 ),
                 StatcastPlateAppearance(
@@ -278,6 +378,8 @@ def test_multiple_games_are_extracted():
                     pitcher_team_code="LAD",
                     inning=1,
                     inning_topbot="Top",
+                    stand="L",
+                    p_throws="R",
                     outcome_code="double",
                 ),
             ]
@@ -310,6 +412,8 @@ def test_top_assigns_away_batter_and_home_pitcher():
                     pitcher_team_code="NYY",
                     inning=1,
                     inning_topbot="Top",
+                    stand="L",
+                    p_throws="R",
                     outcome_code=None,
                 )
             ]
@@ -342,6 +446,8 @@ def test_bot_assigns_home_batter_and_away_pitcher():
                     pitcher_team_code="BOS",
                     inning=1,
                     inning_topbot="Bot",
+                    stand="L",
+                    p_throws="R",
                     outcome_code=None,
                 )
             ]
@@ -415,6 +521,8 @@ def test_duplicate_identical_events_values_are_accepted():
                     pitcher_team_code="NYY",
                     inning=1,
                     inning_topbot="Top",
+                    stand="L",
+                    p_throws="R",
                     outcome_code="single",
                 )
             ]
@@ -604,6 +712,58 @@ def test_conflicting_inning_topbot_values_raise_value_error():
         engine.dispose()
 
 
+def test_conflicting_stand_values_raise_value_error():
+    engine = _create_engine()
+    game_pk = 900000873
+
+    try:
+        with _isolated_connection(engine) as connection:
+            _clear_statcast_pitches(connection)
+            _insert_pitch(
+                connection,
+                game_pk=game_pk,
+                stand="L",
+                pitch_number=1,
+            )
+            _insert_pitch(
+                connection,
+                game_pk=game_pk,
+                stand="R",
+                pitch_number=2,
+            )
+
+            with pytest.raises(ValueError, match=rf"stand.*game_pk={game_pk}"):
+                get_statcast_plate_appearances(connection)
+    finally:
+        engine.dispose()
+
+
+def test_conflicting_p_throws_values_raise_value_error():
+    engine = _create_engine()
+    game_pk = 900000874
+
+    try:
+        with _isolated_connection(engine) as connection:
+            _clear_statcast_pitches(connection)
+            _insert_pitch(
+                connection,
+                game_pk=game_pk,
+                p_throws="L",
+                pitch_number=1,
+            )
+            _insert_pitch(
+                connection,
+                game_pk=game_pk,
+                p_throws="R",
+                pitch_number=2,
+            )
+
+            with pytest.raises(ValueError, match=rf"p_throws.*game_pk={game_pk}"):
+                get_statcast_plate_appearances(connection)
+    finally:
+        engine.dispose()
+
+
 def test_incomplete_rows_are_excluded():
     engine = _create_engine()
 
@@ -657,6 +817,84 @@ def test_incomplete_rows_are_excluded():
                     pitcher_team_code="NYY",
                     inning=1,
                     inning_topbot="Top",
+                    stand="L",
+                    p_throws="R",
+                    outcome_code="walk",
+                )
+            ]
+    finally:
+        engine.dispose()
+
+
+def test_missing_stand_is_excluded():
+    engine = _create_engine()
+
+    try:
+        with _isolated_connection(engine) as connection:
+            _clear_statcast_pitches(connection)
+            _insert_pitch(
+                connection,
+                game_pk=900000875,
+                stand=None,
+            )
+            _insert_pitch(
+                connection,
+                game_pk=900000876,
+                events="walk",
+            )
+
+            result = get_statcast_plate_appearances(connection)
+
+            assert result == [
+                StatcastPlateAppearance(
+                    mlb_game_pk=900000876,
+                    at_bat_number=1,
+                    batter_id=1001,
+                    pitcher_id=2002,
+                    batter_team_code="BOS",
+                    pitcher_team_code="NYY",
+                    inning=1,
+                    inning_topbot="Top",
+                    stand="L",
+                    p_throws="R",
+                    outcome_code="walk",
+                )
+            ]
+    finally:
+        engine.dispose()
+
+
+def test_missing_p_throws_is_excluded():
+    engine = _create_engine()
+
+    try:
+        with _isolated_connection(engine) as connection:
+            _clear_statcast_pitches(connection)
+            _insert_pitch(
+                connection,
+                game_pk=900000877,
+                p_throws=None,
+            )
+            _insert_pitch(
+                connection,
+                game_pk=900000878,
+                events="walk",
+            )
+
+            result = get_statcast_plate_appearances(connection)
+
+            assert result == [
+                StatcastPlateAppearance(
+                    mlb_game_pk=900000878,
+                    at_bat_number=1,
+                    batter_id=1001,
+                    pitcher_id=2002,
+                    batter_team_code="BOS",
+                    pitcher_team_code="NYY",
+                    inning=1,
+                    inning_topbot="Top",
+                    stand="L",
+                    p_throws="R",
                     outcome_code="walk",
                 )
             ]
@@ -704,6 +942,96 @@ def test_invalid_inning_topbot_is_excluded():
                     pitcher_team_code="BOS",
                     inning=1,
                     inning_topbot="Bot",
+                    stand="L",
+                    p_throws="R",
+                    outcome_code="single",
+                )
+            ]
+    finally:
+        engine.dispose()
+
+
+def test_invalid_stand_is_excluded():
+    engine = _create_engine()
+
+    try:
+        with _isolated_connection(engine) as connection:
+            _clear_statcast_pitches(connection)
+            _insert_pitch(
+                connection,
+                game_pk=900000879,
+                stand="X",
+            )
+            _insert_pitch(
+                connection,
+                game_pk=900000880,
+                stand="l",
+            )
+            _insert_pitch(
+                connection,
+                game_pk=900000881,
+                stand="R",
+                events="single",
+            )
+
+            result = get_statcast_plate_appearances(connection)
+
+            assert result == [
+                StatcastPlateAppearance(
+                    mlb_game_pk=900000881,
+                    at_bat_number=1,
+                    batter_id=1001,
+                    pitcher_id=2002,
+                    batter_team_code="BOS",
+                    pitcher_team_code="NYY",
+                    inning=1,
+                    inning_topbot="Top",
+                    stand="R",
+                    p_throws="R",
+                    outcome_code="single",
+                )
+            ]
+    finally:
+        engine.dispose()
+
+
+def test_invalid_p_throws_is_excluded():
+    engine = _create_engine()
+
+    try:
+        with _isolated_connection(engine) as connection:
+            _clear_statcast_pitches(connection)
+            _insert_pitch(
+                connection,
+                game_pk=900000882,
+                p_throws="S",
+            )
+            _insert_pitch(
+                connection,
+                game_pk=900000883,
+                p_throws="Right",
+            )
+            _insert_pitch(
+                connection,
+                game_pk=900000884,
+                p_throws="L",
+                events="single",
+            )
+
+            result = get_statcast_plate_appearances(connection)
+
+            assert result == [
+                StatcastPlateAppearance(
+                    mlb_game_pk=900000884,
+                    at_bat_number=1,
+                    batter_id=1001,
+                    pitcher_id=2002,
+                    batter_team_code="BOS",
+                    pitcher_team_code="NYY",
+                    inning=1,
+                    inning_topbot="Top",
+                    stand="L",
+                    p_throws="L",
                     outcome_code="single",
                 )
             ]
@@ -778,6 +1106,8 @@ def test_returned_values_are_statcast_plate_appearance_instances():
             assert isinstance(plate_appearance.pitcher_team_code, str)
             assert isinstance(plate_appearance.inning, int)
             assert isinstance(plate_appearance.inning_topbot, str)
+            assert isinstance(plate_appearance.stand, str)
+            assert isinstance(plate_appearance.p_throws, str)
             assert isinstance(plate_appearance.outcome_code, str)
     finally:
         engine.dispose()

@@ -15,6 +15,8 @@ _CONTEXT_FIELDS = (
     "away_team",
     "inning",
     "inning_topbot",
+    "stand",
+    "p_throws",
 )
 
 
@@ -28,6 +30,8 @@ class StatcastPlateAppearance:
     pitcher_team_code: str
     inning: int
     inning_topbot: str
+    stand: str
+    p_throws: str
     outcome_code: str | None
 
 
@@ -58,6 +62,8 @@ def get_statcast_plate_appearances(
         & statcast_pitch.c.away_team.is_not(None)
         & statcast_pitch.c.inning.is_not(None)
         & statcast_pitch.c.inning_topbot.in_(("Top", "Bot"))
+        & statcast_pitch.c.stand.in_(("L", "R", "S"))
+        & statcast_pitch.c.p_throws.in_(("L", "R"))
     )
 
     for field_name in _CONTEXT_FIELDS:
@@ -86,6 +92,8 @@ def get_statcast_plate_appearances(
             statcast_pitch.c.away_team,
             statcast_pitch.c.inning,
             statcast_pitch.c.inning_topbot,
+            statcast_pitch.c.stand,
+            statcast_pitch.c.p_throws,
             func.max(statcast_pitch.c.events).label("events"),
         )
         .where(complete_rows)
@@ -98,6 +106,8 @@ def get_statcast_plate_appearances(
             statcast_pitch.c.away_team,
             statcast_pitch.c.inning,
             statcast_pitch.c.inning_topbot,
+            statcast_pitch.c.stand,
+            statcast_pitch.c.p_throws,
         )
         .order_by(statcast_pitch.c.game_pk, statcast_pitch.c.at_bat_number)
     ).all()
@@ -122,6 +132,8 @@ def get_statcast_plate_appearances(
                 pitcher_team_code=pitcher_team_code,
                 inning=int(row.inning),
                 inning_topbot=inning_topbot,
+                stand=str(row.stand),
+                p_throws=str(row.p_throws),
                 outcome_code=None if row.events is None else str(row.events),
             )
         )
