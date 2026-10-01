@@ -563,7 +563,7 @@ def test_null_pitch_outcome_remains_none():
                 pitch_type_code="ZUF_SI",
                 pitch_outcome_code="zuf_hit_into_play",
                 batter_team_code="ZUK",
-                pitcher_team_code="ZUL",
+                pitcher_team_code="ZXUL",
             )
 
             result = transform_pitches(
