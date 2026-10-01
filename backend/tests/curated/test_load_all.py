@@ -2,6 +2,7 @@
 
 from contextlib import contextmanager
 from datetime import date, datetime, timezone
+from unittest.mock import MagicMock, call, patch
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Connection, Engine
@@ -21,6 +22,7 @@ from app.ingestion.batch import create_ingestion_batch
 
 _CURATED_TABLES = (
     "season",
+    "team",
     "game",
     "game_team",
     "game_player",
@@ -172,6 +174,90 @@ def _seed_pipeline_inputs(connection: Connection) -> None:
     _insert_statcast_pitch(connection)
 
 
+def test_load_all_curated_calls_loaders_in_dependency_order():
+    connection = MagicMock()
+    seasons = SeasonLoadResult(seasons_loaded=5)
+    games = GameLoadResult(games_supplied=1, games_loaded=1)
+    game_teams = GameTeamLoadResult(game_teams_supplied=2, game_teams_loaded=2)
+    game_players = GamePlayerLoadResult(
+        game_players_supplied=2,
+        game_players_loaded=2,
+    )
+    plate_appearances = PlateAppearanceLoadOrchestrationResult(
+        plate_appearances_found=1,
+        plate_appearances_loaded=1,
+    )
+    pitches = PitchLoadOrchestrationResult(pitches_found=1, pitches_loaded=1)
+
+    with (
+        patch(
+            "app.curated.load_all.load_mlb_seasons",
+            return_value=seasons,
+        ) as mock_seasons,
+        patch(
+            "app.curated.load_all.load_teams_from_mlb_stats_api",
+            return_value=30,
+        ) as mock_teams,
+        patch(
+            "app.curated.load_all.load_games_from_statcast",
+            return_value=games,
+        ) as mock_games,
+        patch(
+            "app.curated.load_all.load_game_teams_from_statcast",
+            return_value=game_teams,
+        ) as mock_game_teams,
+        patch(
+            "app.curated.load_all.load_game_players_from_statcast",
+            return_value=game_players,
+        ) as mock_game_players,
+        patch(
+            "app.curated.load_all.load_plate_appearances_from_statcast",
+            return_value=plate_appearances,
+        ) as mock_plate_appearances,
+        patch(
+            "app.curated.load_all.load_pitches_from_statcast",
+            return_value=pitches,
+        ) as mock_pitches,
+    ):
+        manager = MagicMock()
+        manager.attach_mock(mock_seasons, "load_mlb_seasons")
+        manager.attach_mock(mock_teams, "load_teams_from_mlb_stats_api")
+        manager.attach_mock(mock_games, "load_games_from_statcast")
+        manager.attach_mock(mock_game_teams, "load_game_teams_from_statcast")
+        manager.attach_mock(
+            mock_game_players,
+            "load_game_players_from_statcast",
+        )
+        manager.attach_mock(
+            mock_plate_appearances,
+            "load_plate_appearances_from_statcast",
+        )
+        manager.attach_mock(mock_pitches, "load_pitches_from_statcast")
+
+        result = load_all_curated(connection)
+
+    assert manager.mock_calls == [
+        call.load_mlb_seasons(connection),
+        call.load_teams_from_mlb_stats_api(connection),
+        call.load_games_from_statcast(connection),
+        call.load_game_teams_from_statcast(connection),
+        call.load_game_players_from_statcast(connection),
+        call.load_plate_appearances_from_statcast(connection),
+        call.load_pitches_from_statcast(connection),
+    ]
+    mock_teams.assert_called_once_with(connection)
+    assert result.teams == 30
+    assert result == CuratedLoadResult(
+        seasons=seasons,
+        teams=30,
+        games=games,
+        game_teams=game_teams,
+        game_players=game_players,
+        plate_appearances=plate_appearances,
+        pitches=pitches,
+    )
+
+
 def test_load_all_curated_populates_curated_tables():
     engine = _create_engine()
 
@@ -179,10 +265,16 @@ def test_load_all_curated_populates_curated_tables():
         with _isolated_connection(engine) as connection:
             _seed_pipeline_inputs(connection)
 
-            result = load_all_curated(connection)
+            with patch(
+                "app.curated.load_all.load_teams_from_mlb_stats_api",
+                return_value=30,
+            ) as mock_load_teams:
+                result = load_all_curated(connection)
 
+            mock_load_teams.assert_called_once_with(connection)
             assert isinstance(result, CuratedLoadResult)
             assert isinstance(result.seasons, SeasonLoadResult)
+            assert result.teams == 30
             assert isinstance(result.games, GameLoadResult)
             assert isinstance(result.game_teams, GameTeamLoadResult)
             assert isinstance(result.game_players, GamePlayerLoadResult)
@@ -194,6 +286,7 @@ def test_load_all_curated_populates_curated_tables():
 
             counts = _curated_counts(connection)
             assert counts["season"] > 0
+            assert counts["team"] > 0
             assert counts["game"] > 0
             assert counts["game_team"] > 0
             assert counts["game_player"] > 0
@@ -210,14 +303,19 @@ def test_load_all_curated_does_not_duplicate_business_records():
         with _isolated_connection(engine) as connection:
             _seed_pipeline_inputs(connection)
 
-            load_all_curated(connection)
-            counts_after_first = _curated_counts(connection)
+            with patch(
+                "app.curated.load_all.load_teams_from_mlb_stats_api",
+                return_value=30,
+            ):
+                load_all_curated(connection)
+                counts_after_first = _curated_counts(connection)
 
-            load_all_curated(connection)
-            counts_after_second = _curated_counts(connection)
+                load_all_curated(connection)
+                counts_after_second = _curated_counts(connection)
 
             assert counts_after_second == counts_after_first
             assert counts_after_first["game"] > 0
+            assert counts_after_first["team"] > 0
             assert counts_after_first["game_team"] > 0
             assert counts_after_first["game_player"] > 0
             assert counts_after_first["plate_appearance"] > 0
