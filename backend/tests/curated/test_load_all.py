@@ -16,6 +16,7 @@ from app.curated.pitch_loader import PitchLoadOrchestrationResult
 from app.curated.plate_appearance_loader import (
     PlateAppearanceLoadOrchestrationResult,
 )
+from app.curated.player_loader import PlayerLoadResult
 from app.curated.season_data import SeasonLoadResult
 from app.ingestion.batch import create_ingestion_batch
 
@@ -23,6 +24,7 @@ from app.ingestion.batch import create_ingestion_batch
 _CURATED_TABLES = (
     "season",
     "team",
+    "player",
     "game",
     "game_team",
     "game_player",
@@ -177,6 +179,11 @@ def _seed_pipeline_inputs(connection: Connection) -> None:
 def test_load_all_curated_calls_loaders_in_dependency_order():
     connection = MagicMock()
     seasons = SeasonLoadResult(seasons_loaded=5)
+    players = PlayerLoadResult(
+        player_ids_found=2,
+        players_resolved=2,
+        players_loaded=2,
+    )
     games = GameLoadResult(games_supplied=1, games_loaded=1)
     game_teams = GameTeamLoadResult(game_teams_supplied=2, game_teams_loaded=2)
     game_players = GamePlayerLoadResult(
@@ -198,6 +205,10 @@ def test_load_all_curated_calls_loaders_in_dependency_order():
             "app.curated.load_all.load_teams_from_mlb_stats_api",
             return_value=30,
         ) as mock_teams,
+        patch(
+            "app.curated.load_all.load_players_from_statcast",
+            return_value=players,
+        ) as mock_players,
         patch(
             "app.curated.load_all.load_games_from_statcast",
             return_value=games,
@@ -222,6 +233,7 @@ def test_load_all_curated_calls_loaders_in_dependency_order():
         manager = MagicMock()
         manager.attach_mock(mock_seasons, "load_mlb_seasons")
         manager.attach_mock(mock_teams, "load_teams_from_mlb_stats_api")
+        manager.attach_mock(mock_players, "load_players_from_statcast")
         manager.attach_mock(mock_games, "load_games_from_statcast")
         manager.attach_mock(mock_game_teams, "load_game_teams_from_statcast")
         manager.attach_mock(
@@ -239,6 +251,7 @@ def test_load_all_curated_calls_loaders_in_dependency_order():
     assert manager.mock_calls == [
         call.load_mlb_seasons(connection),
         call.load_teams_from_mlb_stats_api(connection),
+        call.load_players_from_statcast(connection),
         call.load_games_from_statcast(connection),
         call.load_game_teams_from_statcast(connection),
         call.load_game_players_from_statcast(connection),
@@ -246,10 +259,12 @@ def test_load_all_curated_calls_loaders_in_dependency_order():
         call.load_pitches_from_statcast(connection),
     ]
     mock_teams.assert_called_once_with(connection)
+    mock_players.assert_called_once_with(connection)
     assert result.teams == 30
     assert result == CuratedLoadResult(
         seasons=seasons,
         teams=30,
+        players=players,
         games=games,
         game_teams=game_teams,
         game_players=game_players,
@@ -265,16 +280,30 @@ def test_load_all_curated_populates_curated_tables():
         with _isolated_connection(engine) as connection:
             _seed_pipeline_inputs(connection)
 
-            with patch(
-                "app.curated.load_all.load_teams_from_mlb_stats_api",
-                return_value=30,
-            ) as mock_load_teams:
+            players = PlayerLoadResult(
+                player_ids_found=2,
+                players_resolved=2,
+                players_loaded=2,
+            )
+            with (
+                patch(
+                    "app.curated.load_all.load_teams_from_mlb_stats_api",
+                    return_value=30,
+                ) as mock_load_teams,
+                patch(
+                    "app.curated.load_all.load_players_from_statcast",
+                    return_value=players,
+                ) as mock_load_players,
+            ):
                 result = load_all_curated(connection)
 
             mock_load_teams.assert_called_once_with(connection)
+            mock_load_players.assert_called_once_with(connection)
             assert isinstance(result, CuratedLoadResult)
             assert isinstance(result.seasons, SeasonLoadResult)
             assert result.teams == 30
+            assert isinstance(result.players, PlayerLoadResult)
+            assert result.players == players
             assert isinstance(result.games, GameLoadResult)
             assert isinstance(result.game_teams, GameTeamLoadResult)
             assert isinstance(result.game_players, GamePlayerLoadResult)
@@ -287,6 +316,7 @@ def test_load_all_curated_populates_curated_tables():
             counts = _curated_counts(connection)
             assert counts["season"] > 0
             assert counts["team"] > 0
+            assert counts["player"] > 0
             assert counts["game"] > 0
             assert counts["game_team"] > 0
             assert counts["game_player"] > 0
@@ -303,9 +333,19 @@ def test_load_all_curated_does_not_duplicate_business_records():
         with _isolated_connection(engine) as connection:
             _seed_pipeline_inputs(connection)
 
-            with patch(
-                "app.curated.load_all.load_teams_from_mlb_stats_api",
-                return_value=30,
+            with (
+                patch(
+                    "app.curated.load_all.load_teams_from_mlb_stats_api",
+                    return_value=30,
+                ),
+                patch(
+                    "app.curated.load_all.load_players_from_statcast",
+                    return_value=PlayerLoadResult(
+                        player_ids_found=2,
+                        players_resolved=2,
+                        players_loaded=2,
+                    ),
+                ),
             ):
                 load_all_curated(connection)
                 counts_after_first = _curated_counts(connection)
@@ -316,6 +356,7 @@ def test_load_all_curated_does_not_duplicate_business_records():
             assert counts_after_second == counts_after_first
             assert counts_after_first["game"] > 0
             assert counts_after_first["team"] > 0
+            assert counts_after_first["player"] > 0
             assert counts_after_first["game_team"] > 0
             assert counts_after_first["game_player"] > 0
             assert counts_after_first["plate_appearance"] > 0

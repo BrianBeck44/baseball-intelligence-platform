@@ -582,13 +582,19 @@ def test_conflicting_batter_values_raise_value_error():
         engine.dispose()
 
 
-def test_conflicting_pitcher_values_raise_value_error():
+def test_mid_plate_appearance_pitching_change_uses_first_pitcher():
     engine = _create_engine()
     game_pk = 900000862
 
     try:
         with _isolated_connection(engine) as connection:
             _clear_statcast_pitches(connection)
+            _insert_pitch(
+                connection,
+                game_pk=game_pk,
+                pitcher=4004,
+                pitch_number=2,
+            )
             _insert_pitch(
                 connection,
                 game_pk=game_pk,
@@ -599,11 +605,26 @@ def test_conflicting_pitcher_values_raise_value_error():
                 connection,
                 game_pk=game_pk,
                 pitcher=4004,
-                pitch_number=2,
+                pitch_number=3,
             )
 
-            with pytest.raises(ValueError, match=rf"pitcher.*game_pk={game_pk}"):
-                get_statcast_plate_appearances(connection)
+            result = get_statcast_plate_appearances(connection)
+
+            assert result == [
+                StatcastPlateAppearance(
+                    mlb_game_pk=game_pk,
+                    at_bat_number=1,
+                    batter_id=1001,
+                    pitcher_id=2002,
+                    batter_team_code="BOS",
+                    pitcher_team_code="NYY",
+                    inning=1,
+                    inning_topbot="Top",
+                    stand="L",
+                    p_throws="R",
+                    outcome_code=None,
+                )
+            ]
     finally:
         engine.dispose()
 

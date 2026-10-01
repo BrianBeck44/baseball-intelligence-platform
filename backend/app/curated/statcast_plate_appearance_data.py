@@ -10,7 +10,6 @@ from sqlalchemy.engine import Connection
 
 _CONTEXT_FIELDS = (
     "batter",
-    "pitcher",
     "home_team",
     "away_team",
     "inning",
@@ -43,7 +42,8 @@ def get_statcast_plate_appearances(
     Rows missing required plate-appearance context are ignored. Only
     ``Top`` and ``Bot`` half-innings are accepted. Conflicting non-null
     contextual or ``events`` values for the same plate appearance raise
-    ValueError.
+    ValueError. Multiple pitchers in one plate appearance are allowed;
+    ``pitcher_id`` is taken from the lowest ``pitch_number``.
     """
     metadata = MetaData()
     statcast_pitch = Table(
@@ -82,12 +82,47 @@ def get_statcast_plate_appearances(
         "events",
     )
 
+    first_pitch_numbers = (
+        select(
+            statcast_pitch.c.game_pk,
+            statcast_pitch.c.at_bat_number,
+            func.min(statcast_pitch.c.pitch_number).label("pitch_number"),
+        )
+        .where(complete_rows)
+        .group_by(
+            statcast_pitch.c.game_pk,
+            statcast_pitch.c.at_bat_number,
+        )
+        .subquery()
+    )
+    first_pitchers = (
+        select(
+            statcast_pitch.c.game_pk,
+            statcast_pitch.c.at_bat_number,
+            statcast_pitch.c.pitcher,
+        )
+        .where(complete_rows)
+        .join(
+            first_pitch_numbers,
+            (statcast_pitch.c.game_pk == first_pitch_numbers.c.game_pk)
+            & (
+                statcast_pitch.c.at_bat_number
+                == first_pitch_numbers.c.at_bat_number
+            )
+            & (
+                statcast_pitch.c.pitch_number
+                == first_pitch_numbers.c.pitch_number
+            ),
+        )
+        .subquery()
+    )
+
     rows = connection.execute(
         select(
             statcast_pitch.c.game_pk,
             statcast_pitch.c.at_bat_number,
             statcast_pitch.c.batter,
-            statcast_pitch.c.pitcher,
+            first_pitchers.c.pitcher,
             statcast_pitch.c.home_team,
             statcast_pitch.c.away_team,
             statcast_pitch.c.inning,
@@ -96,12 +131,20 @@ def get_statcast_plate_appearances(
             statcast_pitch.c.p_throws,
             func.max(statcast_pitch.c.events).label("events"),
         )
+        .join(
+            first_pitchers,
+            (statcast_pitch.c.game_pk == first_pitchers.c.game_pk)
+            & (
+                statcast_pitch.c.at_bat_number
+                == first_pitchers.c.at_bat_number
+            ),
+        )
         .where(complete_rows)
         .group_by(
             statcast_pitch.c.game_pk,
             statcast_pitch.c.at_bat_number,
             statcast_pitch.c.batter,
-            statcast_pitch.c.pitcher,
+            first_pitchers.c.pitcher,
             statcast_pitch.c.home_team,
             statcast_pitch.c.away_team,
             statcast_pitch.c.inning,
