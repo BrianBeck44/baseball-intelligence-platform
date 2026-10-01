@@ -49,10 +49,43 @@ def fetch_mlb_players(player_ids: Collection[int]) -> list[MlbPlayer]:
     return _parse_people(payload)
 
 
-def fetch_mlb_teams() -> list[MlbTeam]:
-    """Return team code and name for MLB Stats API team records."""
-    payload = _get_json(TEAMS_URL)
-    return _parse_teams(payload)
+def fetch_mlb_teams(
+    team_codes: Collection[str],
+    seasons: Collection[int],
+) -> list[MlbTeam]:
+    """Return MLB team code and name for the requested abbreviations.
+
+    Issues one ``/api/v1/teams?sportId=1&season={year}`` request for each
+    distinct Statcast year, then one current ``/api/v1/teams?sportId=1``
+    request. Only records whose abbreviation is in ``team_codes`` are
+    kept. An empty code collection returns no teams and does not call
+    the API.
+
+    When the same code appears in more than one requested season, the
+    name from the latest year is used. Current-list records fill in
+    codes that no season response contained.
+    """
+    unique_codes = _unique_team_codes(team_codes)
+    if not unique_codes:
+        return []
+
+    requested_codes = set(unique_codes)
+    teams_by_code: dict[str, MlbTeam] = {}
+    for year in _unique_seasons(seasons):
+        payload = _get_json(_mlb_teams_url(season=year))
+        teams_by_code.update(
+            _teams_by_requested_code(_parse_teams(payload), requested_codes)
+        )
+
+    payload = _get_json(_mlb_teams_url())
+    for code, team in _teams_by_requested_code(
+        _parse_teams(payload),
+        requested_codes,
+    ).items():
+        if code not in teams_by_code:
+            teams_by_code[code] = team
+
+    return [teams_by_code[code] for code in unique_codes if code in teams_by_code]
 
 
 def _unique_player_ids(player_ids: Iterable[int]) -> list[int]:
@@ -64,6 +97,46 @@ def _unique_player_ids(player_ids: Iterable[int]) -> list[int]:
         seen.add(player_id)
         ordered.append(player_id)
     return ordered
+
+
+def _unique_team_codes(team_codes: Iterable[str]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for team_code in team_codes:
+        if team_code in seen:
+            continue
+        seen.add(team_code)
+        ordered.append(team_code)
+    return ordered
+
+
+def _unique_seasons(seasons: Iterable[int]) -> list[int]:
+    return sorted({int(season) for season in seasons})
+
+
+def _mlb_teams_url(season: int | None = None) -> str:
+    query: dict[str, str] = {"sportId": "1"}
+    if season is not None:
+        query["season"] = str(season)
+    return f"{TEAMS_URL}?{urlencode(query)}"
+
+
+def _teams_by_requested_code(
+    teams: Iterable[MlbTeam],
+    requested_codes: set[str],
+) -> dict[str, MlbTeam]:
+    teams_by_code: dict[str, MlbTeam] = {}
+    for team in teams:
+        if team.code not in requested_codes:
+            continue
+        existing = teams_by_code.get(team.code)
+        if existing is not None and existing != team:
+            raise MlbStatsApiError(
+                "MLB Stats API returned conflicting teams for abbreviation "
+                f"'{team.code}'."
+            )
+        teams_by_code[team.code] = team
+    return teams_by_code
 
 
 def _people_url(player_ids: Collection[int]) -> str:
