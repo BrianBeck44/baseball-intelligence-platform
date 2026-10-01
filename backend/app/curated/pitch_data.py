@@ -11,6 +11,8 @@ from sqlalchemy.engine import Connection
 
 from app.curated.statcast_pitch_data import StatcastPitch
 
+_PITCH_INSERT_BATCH_SIZE = 500
+
 
 @dataclass(frozen=True)
 class CuratedPitch:
@@ -253,15 +255,21 @@ def load_pitches(
         return 0
 
     pitch_table = _curated_table(connection, "pitch")
-    statement = insert(pitch_table).values([asdict(pitch) for pitch in pitches])
-    statement = statement.on_conflict_do_nothing(
-        index_elements=[
-            pitch_table.c.plate_appearance_id,
-            pitch_table.c.pitch_number,
-        ]
-    ).returning(pitch_table.c.pitch_id)
-    result = connection.execute(statement)
-    return len(result.all())
+    inserted = 0
+    for start in range(0, len(pitches), _PITCH_INSERT_BATCH_SIZE):
+        batch = pitches[start : start + _PITCH_INSERT_BATCH_SIZE]
+        statement = insert(pitch_table).values(
+            [asdict(pitch) for pitch in batch]
+        )
+        statement = statement.on_conflict_do_nothing(
+            index_elements=[
+                pitch_table.c.plate_appearance_id,
+                pitch_table.c.pitch_number,
+            ]
+        ).returning(pitch_table.c.pitch_id)
+        result = connection.execute(statement)
+        inserted += len(result.all())
+    return inserted
 
 
 def _curated_table(connection: Connection, table_name: str) -> Table:

@@ -10,7 +10,12 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Connection, Engine
 
 from app.core.config import settings
-from app.curated.pitch_data import CuratedPitch, transform_pitches
+from app.curated.pitch_data import (
+    CuratedPitch,
+    _PITCH_INSERT_BATCH_SIZE,
+    load_pitches,
+    transform_pitches,
+)
 from app.curated.statcast_pitch_data import StatcastPitch
 
 
@@ -252,6 +257,33 @@ def _statcast_pitch(**overrides: object) -> StatcastPitch:
     values["pitch_number"] = 1
     values.update(overrides)
     return StatcastPitch(**values)  # type: ignore[arg-type]
+
+
+def _curated_pitch(
+    *,
+    plate_appearance_id: int,
+    pitch_number: int,
+    pitch_type_id: int | None = None,
+    pitch_outcome_type_id: int | None = None,
+) -> CuratedPitch:
+    values: dict[str, object] = {
+        field.name: None
+        for field in fields(CuratedPitch)
+        if field.name
+        not in {
+            "plate_appearance_id",
+            "pitch_number",
+            "pitch_type_id",
+            "pitch_outcome_type_id",
+        }
+    }
+    return CuratedPitch(
+        plate_appearance_id=plate_appearance_id,
+        pitch_number=pitch_number,
+        pitch_type_id=pitch_type_id,
+        pitch_outcome_type_id=pitch_outcome_type_id,
+        **values,  # type: ignore[arg-type]
+    )
 
 
 def _seed_required_lookups(
@@ -859,5 +891,49 @@ def test_transformation_does_not_manage_transactions():
 
             connection.commit.assert_not_called()
             connection.rollback.assert_not_called()
+    finally:
+        engine.dispose()
+
+
+def test_load_pitches_inserts_more_than_one_batch():
+    engine = _create_engine()
+    pitch_count = _PITCH_INSERT_BATCH_SIZE + 1
+
+    try:
+        with _isolated_connection(engine) as connection:
+            ids = _seed_required_lookups(
+                connection,
+                season_year=2188,
+                game_type_code="ZWA",
+                mlb_game_pk=900009001,
+                pitch_type_code="ZWA_FF",
+                pitch_outcome_code="zwa_called_strike",
+                batter_team_code="ZWA",
+                pitcher_team_code="ZWB",
+            )
+            pitches = [
+                _curated_pitch(
+                    plate_appearance_id=ids["plate_appearance_id"],
+                    pitch_number=pitch_number,
+                    pitch_type_id=ids["pitch_type_id"],
+                    pitch_outcome_type_id=ids["pitch_outcome_type_id"],
+                )
+                for pitch_number in range(1, pitch_count + 1)
+            ]
+
+            result = load_pitches(connection, pitches)
+            stored = connection.execute(
+                text(
+                    """
+                    SELECT COUNT(*)
+                    FROM curated.pitch
+                    WHERE plate_appearance_id = :plate_appearance_id
+                    """
+                ),
+                {"plate_appearance_id": ids["plate_appearance_id"]},
+            ).scalar_one()
+
+            assert result == pitch_count
+            assert stored == pitch_count
     finally:
         engine.dispose()

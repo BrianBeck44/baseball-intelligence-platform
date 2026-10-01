@@ -20,6 +20,10 @@ from app.curated.plate_appearance_loader import (
     PlateAppearanceLoadOrchestrationResult,
     load_plate_appearances_from_statcast,
 )
+from app.curated.player_loader import (
+    PlayerLoadResult,
+    load_players_from_statcast,
+)
 from app.curated.season_data import SeasonLoadResult
 from app.curated.season_loader import load_mlb_seasons
 from app.curated.team_loader import load_teams_from_mlb_stats_api
@@ -29,6 +33,7 @@ from app.curated.team_loader import load_teams_from_mlb_stats_api
 class CuratedLoadResult:
     seasons: SeasonLoadResult
     teams: int
+    players: PlayerLoadResult
     games: GameLoadResult
     game_teams: GameTeamLoadResult
     game_players: GamePlayerLoadResult
@@ -44,6 +49,7 @@ def load_all_curated(connection: Connection) -> CuratedLoadResult:
     """
     seasons = load_mlb_seasons(connection)
     teams = load_teams_from_mlb_stats_api(connection)
+    players = load_players_from_statcast(connection)
     games = load_games_from_statcast(connection)
     game_teams = load_game_teams_from_statcast(connection)
     game_players = load_game_players_from_statcast(connection)
@@ -52,6 +58,7 @@ def load_all_curated(connection: Connection) -> CuratedLoadResult:
     return CuratedLoadResult(
         seasons=seasons,
         teams=teams,
+        players=players,
         games=games,
         game_teams=game_teams,
         game_players=game_players,
