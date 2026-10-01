@@ -68,6 +68,11 @@ OUTCOME_TYPES = (
 )
 
 
+GAME_TYPES = (
+    ReferenceValue(code="R", name="Regular Season"),
+)
+
+
 def _table(connection: Connection, table_name: str) -> Table:
     metadata = MetaData()
     return Table(
@@ -122,4 +127,9 @@ def load_reference_data(connection: Connection) -> None:
         connection,
         "outcome_type",
         OUTCOME_TYPES,
+    )
+    _load_reference_values(
+        connection,
+        "game_type",
+        GAME_TYPES,
     )
