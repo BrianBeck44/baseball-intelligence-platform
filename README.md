@@ -141,7 +141,7 @@ docs/
 
 Establish the overall vision, scope, technology stack, architecture, and engineering principles.
 
-**Status:** In Progress
+**Status:** Complete
 
 ### Project 1 — Data Architecture & Database Design
 
@@ -156,19 +156,19 @@ Define:
 * Indexes
 * Raw/core/analytical data layers
 
-**Status:** Planned
+**Status:** Complete
 
 ### Project 2 — Data Ingestion Pipeline
 
 Build the Python-based pipeline responsible for acquiring, validating, and loading baseball data.
 
-**Status:** Planned
+**Status:** Complete
 
 ### Project 3 — Analytics & Advanced SQL
 
 Develop analytical transformations, baseball metrics, player analysis, team analysis, and advanced SQL queries.
 
-**Status:** Planned
+**Status:** In Progress
 
 ### Project 4 — FastAPI Backend
 
