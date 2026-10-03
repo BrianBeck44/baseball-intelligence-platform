@@ -230,3 +230,108 @@ analytics
 Analytics transformations should be deterministic, documented, and testable.
 
 Changes to the analytical model must not modify the meaning of authoritative curated facts.
+
+## Analytics Design Validation
+
+### Player-Game-Team Grain Validation
+
+The proposed grain for `analytics.player_game_batting` is:
+
+> One row per player, per game, per team.
+
+The current curated dataset was validated against this grain using `curated.plate_appearance`.
+
+Validation results:
+
+* Total plate appearances: **2,500**
+* Distinct `(player_id, game_id, batter_team_id)` combinations: **672**
+* Unresolved player, game, or team references: **0**
+* Invalid `(game_id, team_id)` combinations against `curated.game_team`: **0**
+
+This confirms that the curated plate appearance data can be deterministically aggregated into one analytics row for each `(player_id, game_id, team_id)` combination.
+
+The analytics table will therefore enforce the business key:
+
+```text
+(player_id, game_id, team_id)
+```
+
+with a unique constraint.
+
+The relationship between `game_id` and `team_id` will also be enforced through a composite foreign key to:
+
+```text
+curated.game_team(game_id, team_id)
+```
+
+### Batting Statistic Derivation Validation
+
+The batting counting-stat derivation was independently validated against the current curated plate appearance data.
+
+The resulting totals are:
+
+| Measure           | Total |
+| ----------------- | ----: |
+| Plate appearances | 2,500 |
+| At bats           | 2,203 |
+| Hits              |   489 |
+| Singles           |   325 |
+| Doubles           |    98 |
+| Triples           |     5 |
+| Home runs         |    61 |
+| Walks             |   222 |
+| Hit by pitch      |    40 |
+| Strikeouts        |   585 |
+| Sacrifice flies   |    19 |
+| Sacrifice bunts   |     8 |
+
+The component relationships also reconcile:
+
+```text
+Hits = Singles + Doubles + Triples + Home Runs
+489 = 325 + 98 + 5 + 61
+```
+
+```text
+Walks = Walk + Intent Walk
+222 = 216 + 6
+```
+
+```text
+Strikeouts = Strikeout + Strikeout Double Play
+585 = 584 + 1
+```
+
+These results confirm that the proposed derivation rules produce internally consistent batting totals from the curated plate appearance data.
+
+### Special Outcome Handling
+
+The following outcomes were explicitly validated:
+
+| Outcome          | PA | AB | Hits |
+| ---------------- | -: | -: | ---: |
+| `catcher_interf` |  1 |  0 |    0 |
+| `truncated_pa`   |  6 |  0 |    0 |
+| NULL outcome     |  1 |  0 |    0 |
+
+A plate appearance with a NULL `outcome_type_id` is still counted as a plate appearance because the plate appearance itself is authoritative. However, it contributes to none of the other batting counting statistics because no authoritative outcome is available.
+
+Similarly, `catcher_interf` and `truncated_pa` count as plate appearances but do not contribute to at-bats, hits, walks, hit by pitch, strikeouts, sacrifice flies, or sacrifice bunts under the current analytics rules.
+
+The implementation will not infer a batting result from unrelated pitch-level or source fields when the authoritative plate appearance outcome is unavailable.
+
+### Validation Conclusion
+
+The current curated data validates the proposed `analytics.player_game_batting` design.
+
+Specifically:
+
+1. The player/game/team grain produces **672** unique analytics rows from **2,500** plate appearances.
+2. All source player, game, and team relationships resolve successfully.
+3. Every player/game/team combination maps to a valid `curated.game_team` record.
+4. The batting counting-stat derivation produces internally consistent totals.
+5. Special and incomplete outcomes are handled explicitly rather than inferred.
+6. The analytics model can therefore be implemented as a physical table without introducing additional source-level assumptions.
+
+The next implementation step is to create the Alembic migration for `analytics.player_game_batting`.
+
