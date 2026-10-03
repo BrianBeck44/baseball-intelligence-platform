@@ -116,7 +116,7 @@ SELECT
 
 FROM curated.plate_appearance pa
 LEFT JOIN curated.outcome_type ot
-    ON ot.outcome_type_id = pa.outcome_type_id;
+    ON ot.id = pa.outcome_type_id;
 
 
 -- ============================================================================
@@ -278,7 +278,7 @@ SELECT
 FROM curated.plate_appearance pa
 
 LEFT JOIN curated.outcome_type ot
-    ON ot.outcome_type_id = pa.outcome_type_id
+    ON ot.id = pa.outcome_type_id
 
 GROUP BY ot.code
 
@@ -351,4 +351,4 @@ SELECT
 FROM curated.plate_appearance pa
 
 LEFT JOIN curated.outcome_type ot
-    ON ot.outcome_type_id = pa.outcome_type_id;
+    ON ot.id = pa.outcome_type_id;
