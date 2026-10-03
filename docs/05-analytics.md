@@ -335,3 +335,255 @@ Specifically:
 
 The next implementation step is to create the Alembic migration for `analytics.player_game_batting`.
 
+## Player Game Pitching
+
+### Purpose and Grain
+
+The `analytics.player_game_pitching` table provides game-level pitching performance
+aggregated from the curated plate appearance and pitch data.
+
+The grain is one row per pitcher, per game, per pitching team.
+
+Business key:
+
+```text
+(pitcher_id, game_id, team_id)
+```
+
+The table provides a stable game-level pitching summary while preserving the
+detailed pitch-level data in `curated.pitch` for future pitch analysis.
+
+### Source Data
+
+The primary sources are:
+
+* `curated.plate_appearance`
+* `curated.pitch`
+
+`curated.plate_appearance` is authoritative for pitcher, pitching team, game,
+and plate-appearance outcomes.
+
+`curated.pitch` is authoritative for individual pitch observations and is used
+to calculate total pitches.
+
+The pitching team is taken directly from
+`curated.plate_appearance.pitcher_team_id`; it is not inferred from other
+game data.
+
+### Initial Measures
+
+The initial analytics table contains the following measures:
+
+| Measure             | Definition                                       |
+| ------------------- | ------------------------------------------------ |
+| `batters_faced`     | Number of plate appearances faced by the pitcher |
+| `pitches`           | Number of pitches thrown by the pitcher          |
+| `hits_allowed`      | Singles + doubles + triples + home runs          |
+| `home_runs_allowed` | Home runs allowed                                |
+| `walks`             | Walks + intentional walks                        |
+| `hit_by_pitch`      | Hit by pitch                                     |
+| `strikeouts`        | Strikeouts + strikeout double plays              |
+
+Rate statistics such as ERA, WHIP, K/9, BB/9, HR/9, opponent batting average,
+and opponent slugging percentage are intentionally deferred. They can be
+derived from the foundational measures without storing redundant values.
+
+### Plate Appearance Outcome Derivation
+
+Each plate appearance faced by a pitcher contributes one to `batters_faced`.
+
+The following outcome mappings are used:
+
+| Outcome                 | BF |  H | HR | BB | HBP |  K |
+| ----------------------- | -: | -: | -: | -: | --: | -: |
+| `single`                |  1 |  1 |  0 |  0 |   0 |  0 |
+| `double`                |  1 |  1 |  0 |  0 |   0 |  0 |
+| `triple`                |  1 |  1 |  0 |  0 |   0 |  0 |
+| `home_run`              |  1 |  1 |  1 |  0 |   0 |  0 |
+| `walk`                  |  1 |  0 |  0 |  1 |   0 |  0 |
+| `intent_walk`           |  1 |  0 |  0 |  1 |   0 |  0 |
+| `hit_by_pitch`          |  1 |  0 |  0 |  0 |   1 |  0 |
+| `strikeout`             |  1 |  0 |  0 |  0 |   0 |  1 |
+| `strikeout_double_play` |  1 |  0 |  0 |  0 |   0 |  1 |
+| All other outcomes      |  1 |  0 |  0 |  0 |   0 |  0 |
+
+A NULL outcome is also treated as a plate appearance faced with no derived
+result.
+
+This derivation intentionally uses the authoritative outcome recorded on the
+plate appearance rather than attempting to reconstruct the result from
+individual pitch events.
+
+### Pitch Count Derivation
+
+`pitches` is calculated from rows in `curated.pitch` associated with the
+pitcher's plate appearances.
+
+Each row in `curated.pitch` represents an individual pitch observation.
+Therefore, the pitch count is the number of associated pitch rows.
+
+The pitch-level outcome is retained in `curated.pitch` and is not collapsed
+into the game-level pitching aggregate.
+
+The current curated pitch outcome vocabulary includes:
+
+* `ball`
+* `foul`
+* `hit_into_play`
+* `called_strike`
+* `swinging_strike`
+* `blocked_ball`
+* `swinging_strike_blocked`
+* `foul_tip`
+* `hit_by_pitch`
+* `automatic_ball`
+* `foul_bunt`
+* `missed_bunt`
+
+No attempt is made in this initial model to derive aggregate `strikes` or
+`balls` from the `curated.pitch.balls` and `curated.pitch.strikes` columns.
+
+Those columns represent the count state associated with a pitch rather than
+a simple classification of the individual pitch as a ball or strike.
+Pitch-level outcome analysis can instead use `curated.pitch_outcome_type`.
+
+### Pitch-Level Analysis Preservation
+
+`analytics.player_game_pitching` is a game-level analytical projection and
+is not intended to replace the detailed pitch data.
+
+The architecture intentionally preserves:
+
+```text
+raw
+  ↓
+curated.pitch
+  ↓
+analytics.player_game_pitching
+```
+
+The curated layer remains the authoritative source for individual pitches and
+their characteristics.
+
+This preserves the ability to perform future pitch-level analysis including:
+
+* pitch-type effectiveness
+* pitch velocity
+* spin rate
+* pitch movement
+* pitch location
+* whiff rate
+* called-strike rate
+* contact rate
+* batting outcomes by pitch type
+* pitch effectiveness by count
+* pitch effectiveness by batter or pitcher
+
+For example, curveball effectiveness can be analyzed directly from
+`curated.pitch` using the associated pitch type and pitch-level outcome data.
+That analysis does not depend on the game-level pitching aggregate retaining
+individual pitch characteristics.
+
+### Relationship Integrity
+
+The table uses the following relationships:
+
+```text
+pitcher_id → curated.player.player_id
+game_id    → curated.game.game_id
+team_id    → curated.team.team_id
+```
+
+The combination:
+
+```text
+(game_id, team_id)
+```
+
+must also resolve to:
+
+```text
+curated.game_team(game_id, team_id)
+```
+
+This ensures that the pitching team actually participated in the game.
+
+The pitching team is sourced directly from
+`curated.plate_appearance.pitcher_team_id`.
+
+### Validation Invariants
+
+The following invariants should hold:
+
+* `batters_faced` is non-negative.
+* `pitches` is non-negative.
+* `hits_allowed` is non-negative.
+* `home_runs_allowed` is non-negative.
+* `walks` is non-negative.
+* `hit_by_pitch` is non-negative.
+* `strikeouts` is non-negative.
+* `home_runs_allowed <= hits_allowed`.
+* `hits_allowed <= batters_faced`.
+* `walks <= batters_faced`.
+* `hit_by_pitch <= batters_faced`.
+* `strikeouts <= batters_faced`.
+* `pitches >= batters_faced` for the current curated dataset.
+* `(pitcher_id, game_id, team_id)` is unique.
+* Every pitcher resolves to `curated.player`.
+* Every game resolves to `curated.game`.
+* Every team resolves to `curated.team`.
+* Every `(game_id, team_id)` resolves to `curated.game_team`.
+
+The aggregate `hits_allowed` value must equal the sum of singles, doubles,
+triples, and home runs derived from the underlying plate appearances.
+
+### Design Principles
+
+The analytics layer follows the project's general principle of deriving
+analytical projections from authoritative curated facts.
+
+For player-game pitching:
+
+```text
+raw Statcast data
+       ↓
+curated.plate_appearance
+curated.pitch
+       ↓
+analytics.player_game_pitching
+```
+
+The curated layer preserves detailed authoritative baseball facts.
+
+The analytics layer provides a convenient game-level representation for
+common pitching analysis.
+
+Derived rates and specialized analytical models should be created from these
+foundational measures rather than duplicating authoritative facts unnecessarily.
+
+### Initial Scope
+
+The first version intentionally excludes:
+
+* innings pitched
+* outs recorded
+* earned runs
+* runs allowed
+* ERA
+* WHIP
+* K/9
+* BB/9
+* HR/9
+* opponent batting average
+* opponent slugging percentage
+* aggregate pitch-level strike totals
+* aggregate pitch-level ball totals
+* pitch-type effectiveness metrics
+
+These measures can be added as separate analytical models or derived metrics
+when the underlying curated data and derivation rules provide authoritative
+support.
+
+The detailed pitch data remains available in `curated.pitch` for future
+pitch-level analytics without requiring changes to the foundational
+`player_game_pitching` grain.
