@@ -333,7 +333,23 @@ Specifically:
 5. Special and incomplete outcomes are handled explicitly rather than inferred.
 6. The analytics model can therefore be implemented as a physical table without introducing additional source-level assumptions.
 
-The next implementation step is to create the Alembic migration for `analytics.player_game_batting`.
+T### Validation Conclusion
+
+The current curated data validates the proposed `analytics.player_game_batting` design.
+
+Specifically:
+
+1. The player/game/team grain produces **672** unique analytics rows from **2,500** plate appearances.
+2. All source player, game, and team relationships resolve successfully.
+3. Every player/game/team combination maps to a valid `curated.game_team` record.
+4. The batting counting-stat derivation produces internally consistent totals.
+5. Special and incomplete outcomes are handled explicitly rather than inferred.
+6. The analytics model has been implemented and validated against the current curated dataset.
+
+The player-game batting model is now an established foundational analytics model for downstream player performance analysis.
+
+The next analytical capability is **Player Performance Trends**, as defined in Section 3.
+
 
 ## Player Game Pitching
 
@@ -587,3 +603,492 @@ support.
 The detailed pitch data remains available in `curated.pitch` for future
 pitch-level analytics without requiring changes to the foundational
 `player_game_pitching` grain.
+
+## 3. Player Performance Trends
+
+### 3.1 Purpose
+
+The next analytical capability is to evaluate how an individual player's performance changes over time.
+
+The initial use case is:
+
+> **How has a player's offensive performance changed over time?**
+
+This model builds on the foundational game-level analytics already provided by:
+
+```text
+analytics.player_game_batting
+analytics.player_game_pitching
+```
+
+The initial implementation will focus on batting performance.
+
+The purpose is to support analytical questions such as:
+
+* Is a player's recent performance improving or declining?
+* How does recent performance compare with the player's season-to-date performance?
+* Has a player's strikeout or walk rate changed over a recent period?
+* Has a player's power production changed over time?
+* Is a player's recent performance materially different from their established baseline?
+
+This analysis is intended to provide the foundation for future performance-change analysis, including eventual before-and-after analysis around significant events such as injuries.
+
+### 3.2 Source Data
+
+The initial batting trend analysis will be derived from:
+
+```text
+analytics.player_game_batting
+curated.game
+curated.season
+```
+
+`analytics.player_game_batting` provides the authoritative analytical counting statistics for each player/game/team grain.
+
+`curated.game` provides the game date required to establish the chronological ordering of player performance.
+
+The curated layer remains authoritative for the underlying baseball events.
+
+The trend analysis does not create a new source of truth. It derives temporal measurements from the existing analytical and curated layers.
+
+### 3.3 Initial Analytical Grain
+
+The fundamental source grain remains:
+
+```text
+(player_id, game_id, team_id)
+```
+
+from:
+
+```text
+analytics.player_game_batting
+```
+
+Trend calculations will order a player's game-level observations chronologically by game date.
+
+A player may have multiple team records within a game. Therefore, the existing player/game/team grain must not be collapsed without an explicit analytical rule.
+
+For player-level trend calculations, statistics from all applicable team records for the same player and game date may be aggregated when the analytical question requires a player-level result.
+
+The implementation must preserve the distinction between:
+
+```text
+player + game + team
+```
+
+and:
+
+```text
+player + date
+```
+
+rather than assuming they are interchangeable.
+
+### 3.4 Initial Trend Windows
+
+The initial trend analysis will support the following conceptual windows:
+
+```text
+game-to-game
+7-game rolling
+14-game rolling
+30-game rolling
+season-to-date
+```
+
+These windows are intended to answer different analytical questions.
+
+#### Game-to-Game
+
+Provides the player's individual game performance and allows performance to be plotted or compared sequentially over time.
+
+#### 7-Game Rolling
+
+Provides a short-term performance indicator that can identify recent changes while remaining responsive to current performance.
+
+#### 14-Game Rolling
+
+Provides a medium-term performance indicator that reduces some of the volatility of individual games while still identifying relatively recent changes.
+
+#### 30-Game Rolling
+
+Provides a longer-term recent-performance indicator that can be compared with shorter windows and season-level performance.
+
+#### Season-to-Date
+
+Provides the player's cumulative performance from the beginning of the season through the current game.
+
+The exact number of games included in a rolling window is based on games in which the player has a qualifying batting record, not calendar days.
+
+### 3.5 Initial Counting Metrics
+
+The trend analysis will use the existing batting counting statistics:
+
+```text
+plate_appearances
+at_bats
+hits
+singles
+doubles
+triples
+home_runs
+walks
+hit_by_pitch
+strikeouts
+sacrifice_flies
+sacrifice_bunts
+```
+
+Additional metrics should not be introduced into the trend model unless their derivation rules are documented and validated.
+
+### 3.6 Derived Rate Metrics
+
+Rate statistics will be calculated from aggregated counting statistics rather than by averaging individual game-level rates.
+
+The following derived metrics are initially supported:
+
+```text
+batting_average
+on_base_percentage
+slugging_percentage
+ops
+strikeout_rate
+walk_rate
+```
+
+#### Batting Average
+
+For a given analytical window:
+
+```text
+batting_average =
+    SUM(hits) / SUM(at_bats)
+```
+
+when the aggregated at-bats are greater than zero.
+
+#### Slugging Percentage
+
+For a given analytical window:
+
+```text
+slugging_percentage =
+    (
+        SUM(singles)
+        + 2 * SUM(doubles)
+        + 3 * SUM(triples)
+        + 4 * SUM(home_runs)
+    )
+    / SUM(at_bats)
+```
+
+when the aggregated at-bats are greater than zero.
+
+#### On-Base Percentage
+
+The exact on-base percentage formula must use the application's documented baseball definition.
+
+The implementation must calculate OBP from aggregated numerator and denominator components rather than averaging game-level OBP values.
+
+The selected OBP definition must be explicitly documented before implementation.
+
+#### OPS
+
+OPS is calculated as:
+
+```text
+ops =
+    on_base_percentage + slugging_percentage
+```
+
+when both component rates are defined.
+
+#### Strikeout Rate
+
+For a given analytical window:
+
+```text
+strikeout_rate =
+    SUM(strikeouts) / SUM(plate_appearances)
+```
+
+when the aggregated plate appearances are greater than zero.
+
+#### Walk Rate
+
+For a given analytical window:
+
+```text
+walk_rate =
+    SUM(walks) / SUM(plate_appearances)
+```
+
+when the aggregated plate appearances are greater than zero.
+
+### 3.7 Rate Calculation Principle
+
+The trend model must not calculate rolling rates by averaging individual game-level rates.
+
+For example, this approach is incorrect:
+
+```text
+AVG(game_ops)
+```
+
+for a rolling OPS.
+
+Instead, the underlying counting statistics must first be aggregated across the analytical window and the rate must then be calculated.
+
+For example:
+
+```text
+rolling_hits
+rolling_at_bats
+```
+
+are calculated first, followed by:
+
+```text
+rolling_batting_average =
+    rolling_hits / rolling_at_bats
+```
+
+This ensures that games with different numbers of plate appearances are weighted correctly.
+
+The same principle applies to OBP, SLG, OPS, strikeout rate, and walk rate.
+
+### 3.8 Minimum Sample Considerations
+
+Small samples can produce highly volatile rates.
+
+For example:
+
+```text
+1 AB
+1 H
+```
+
+produces:
+
+```text
+AVG = 1.000
+```
+
+but does not represent a meaningful performance trend.
+
+Therefore, rate-based trend analysis should support minimum sample thresholds.
+
+The initial implementation should retain the underlying counting statistics even when a rate is not considered statistically useful.
+
+Minimum sample thresholds should be defined separately for individual analytical use cases rather than hard-coded into the foundational game-level model.
+
+The initial trend implementation should document any threshold used for:
+
+```text
+7-game
+14-game
+30-game
+season-to-date
+```
+
+rate calculations.
+
+### 3.9 Baseline Comparison
+
+A future extension of the trend analysis will compare recent performance against a player's established baseline.
+
+The conceptual model is:
+
+```text
+recent performance
+        ↓
+baseline performance
+        ↓
+difference
+```
+
+For example:
+
+```text
+30-game OPS       = .925
+season-to-date OPS = .780
+difference         = +.145
+```
+
+Baseline comparisons should be calculated from aggregated counting statistics whenever possible.
+
+The initial implementation should avoid declaring a player to be "improving" or "declining" solely from a single rate difference. Such classifications may be added later when sufficient sample-size and statistical rules have been defined.
+
+### 3.10 Team Changes
+
+A player can change teams during a season.
+
+The underlying game-level model retains:
+
+```text
+team_id
+```
+
+to preserve the authoritative player/game/team relationship.
+
+Player-level trend analysis may aggregate across teams when answering questions about the player's overall performance.
+
+Team-specific analysis must retain the team dimension.
+
+The implementation must therefore distinguish between:
+
+```text
+player overall trend
+```
+
+and:
+
+```text
+player/team trend
+```
+
+rather than silently combining the two.
+
+### 3.11 No New Physical Table Initially
+
+The first implementation of player performance trends should not automatically introduce a new persisted analytics table.
+
+The initial approach should evaluate whether PostgreSQL views and window functions can provide the required trend calculations directly from:
+
+```text
+analytics.player_game_batting
+curated.game
+```
+
+A physical trend table should only be introduced if there is a demonstrated performance, reuse, or application-serving requirement that justifies materializing the results.
+
+This follows the project's general principle of avoiding unnecessary duplication of derived data.
+
+### 3.12 Future Pitching Trends
+
+The same temporal framework can later be applied to:
+
+```text
+analytics.player_game_pitching
+```
+
+to support questions such as:
+
+* Is a pitcher's strikeout rate changing?
+* Is walk rate increasing?
+* Is the number of pitches per batter changing?
+* Is recent opponent production different from the season baseline?
+* How has a pitcher's recent workload changed?
+
+Pitching trend analysis should be implemented as a separate analytical model once the batting trend methodology has been validated.
+
+### 3.13 Future Event-Based Analysis
+
+Player performance trends are intended to provide the foundation for future event-based analysis.
+
+A future model may incorporate authoritative events such as injuries and compare performance across defined periods:
+
+```text
+event
+   ↓
+pre-event performance
+   ↓
+event
+   ↓
+post-event performance
+```
+
+For example:
+
+```text
+30 games before event
+        vs.
+30 games after event
+```
+
+Such analysis will require an authoritative event source and explicitly defined event dates.
+
+Injury analysis is therefore outside the initial scope of the player performance trend model.
+
+### 3.14 Initial Validation Requirements
+
+The trend implementation should validate:
+
+* chronological ordering by game date
+* correct player/game/team relationships
+* correct rolling-window boundaries
+* correct season boundaries
+* correct handling of players changing teams
+* correct aggregation of counting statistics
+* correct rate calculations from aggregated counts
+* no averaging of individual game-level rates
+* correct handling of zero denominators
+* correct handling of NULL or incomplete batting outcomes inherited from `player_game_batting`
+* consistency between season-to-date totals and the underlying game-level data
+
+For any given player and analytical window:
+
+```text
+rolling_hits =
+    SUM(game_hits)
+```
+
+and equivalent relationships should hold for all other counting statistics.
+
+Derived rates must reconcile to the corresponding aggregated counting statistics.
+
+### 3.15 Initial Scope
+
+The initial player performance trend model includes:
+
+```text
+game-to-game performance
+7-game rolling performance
+14-game rolling performance
+30-game rolling performance
+season-to-date performance
+batting counting statistics
+batting average
+on-base percentage
+slugging percentage
+OPS
+strikeout rate
+walk rate
+```
+
+The initial model intentionally excludes:
+
+```text
+injury events
+injury attribution
+statistical significance testing
+predictive modeling
+player projections
+league-adjusted metrics
+park-adjusted metrics
+pitch-level trend analysis
+automated "hot/cold" classifications
+```
+
+These may be introduced as separate analytical capabilities after the foundational trend calculations have been validated.
+
+### 3.16 Design Principle
+
+Player performance trends are a derived analytical layer built on top of the existing game-level analytical models.
+
+The intended architecture is:
+
+```text
+raw
+  ↓
+curated
+  ↓
+analytics.player_game_batting
+  ↓
+player performance trends
+```
+
+The trend layer should favor reusable analytical calculations over duplicated persisted data.
+
+The initial implementation should therefore establish the analytical definitions, validate the calculations, and determine whether PostgreSQL views and window functions are sufficient before introducing another physical analytics table.
