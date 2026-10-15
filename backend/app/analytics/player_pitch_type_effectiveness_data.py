@@ -9,6 +9,8 @@ from sqlalchemy import MetaData, Table, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.engine import Connection
 
+_ANALYTICS_WRITE_BATCH_SIZE = 500
+
 
 @dataclass(frozen=True)
 class PlayerPitchTypeEffectivenessPitch:
@@ -150,6 +152,7 @@ def get_player_pitch_type_effectiveness_pitches(
 
 _SWING_OUTCOMES = frozenset(
     {
+        "bunt_foul_tip",
         "foul",
         "foul_bunt",
         "foul_tip",
@@ -167,6 +170,7 @@ _WHIFF_OUTCOMES = frozenset(
 )
 _FOUL_OUTCOMES = frozenset(
     {
+        "bunt_foul_tip",
         "foul",
         "foul_bunt",
         "foul_tip",
@@ -177,6 +181,7 @@ _RECOGNIZED_PITCH_OUTCOMES = frozenset(
         "automatic_ball",
         "ball",
         "blocked_ball",
+        "bunt_foul_tip",
         "called_strike",
         "foul",
         "foul_bunt",
@@ -184,6 +189,7 @@ _RECOGNIZED_PITCH_OUTCOMES = frozenset(
         "hit_by_pitch",
         "hit_into_play",
         "missed_bunt",
+        "pitchout",
         "swinging_strike",
         "swinging_strike_blocked",
     }
@@ -204,10 +210,12 @@ _RECOGNIZED_PA_OUTCOMES = frozenset(
         "intent_walk",
         "sac_bunt",
         "sac_fly",
+        "sac_fly_double_play",
         "single",
         "strikeout",
         "strikeout_double_play",
         "triple",
+        "triple_play",
         "truncated_pa",
         "walk",
     }
@@ -418,15 +426,17 @@ def load_player_pitch_type_effectiveness(
         return 0
 
     table = _analytics_table(connection)
-    statement = insert(table).values([asdict(row) for row in rows])
-    statement = statement.on_conflict_do_update(
-        index_elements=["player_id", "pitch_type_id"],
-        set_={
-            column: statement.excluded[column]
-            for column in _METRIC_COLUMNS
-        },
-    )
-    connection.execute(statement)
+    for start in range(0, len(rows), _ANALYTICS_WRITE_BATCH_SIZE):
+        batch = rows[start : start + _ANALYTICS_WRITE_BATCH_SIZE]
+        statement = insert(table).values([asdict(row) for row in batch])
+        statement = statement.on_conflict_do_update(
+            index_elements=["player_id", "pitch_type_id"],
+            set_={
+                column: statement.excluded[column]
+                for column in _METRIC_COLUMNS
+            },
+        )
+        connection.execute(statement)
     return len(rows)
 
 

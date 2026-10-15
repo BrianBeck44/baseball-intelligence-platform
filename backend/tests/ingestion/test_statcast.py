@@ -7,12 +7,13 @@ the required V1 behavior against real PostgreSQL.
 import csv
 from datetime import date, datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 import pandas as pd
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from sqlalchemy.engine import Connection, Engine
 
-from app.core.config import settings
+from tests.db import create_test_engine
 from app.ingestion import batch as batch_module
 from app.ingestion import statcast
 from app.ingestion.batch import STATUS_COMPLETED, STATUS_FAILED, create_ingestion_batch
@@ -43,7 +44,7 @@ CSV_FIELDS = [
 
 
 def _engine() -> Engine:
-    return create_engine(settings.database_url)
+    return create_test_engine()
 
 
 def _valid_row(**overrides) -> dict:
@@ -87,11 +88,12 @@ def _write_csv(path: Path, rows: list[dict]) -> None:
 
 
 def _ingest(file_path: Path, source_name: str, chunk_size: int = 10_000) -> IngestionResult:
-    return statcast.ingest_statcast_file(
-        file_path=file_path,
-        source_name=source_name,
-        chunk_size=chunk_size,
-    )
+    with patch.object(statcast, "_create_engine", create_test_engine):
+        return statcast.ingest_statcast_file(
+            file_path=file_path,
+            source_name=source_name,
+            chunk_size=chunk_size,
+        )
 
 
 def _cleanup_statcast_test(

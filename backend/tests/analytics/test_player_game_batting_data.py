@@ -6,7 +6,7 @@ from datetime import date
 from unittest.mock import MagicMock
 
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from sqlalchemy.engine import Connection, Engine
 
 from sqlalchemy.exc import IntegrityError
@@ -18,7 +18,7 @@ from app.analytics.player_game_batting_data import (
     load_player_game_batting,
     transform_player_game_batting,
 )
-from app.core.config import settings
+from tests.db import create_test_engine
 
 
 def _appearance(
@@ -164,15 +164,17 @@ def test_strikeout_and_strikeout_double_play(outcome_code: str):
     assert result == [_row(at_bats=1, strikeouts=1)]
 
 
-def test_sacrifice_fly():
+@pytest.mark.parametrize("outcome_code", ["sac_fly", "sac_fly_double_play"])
+def test_sacrifice_fly(outcome_code: str):
     connection = MagicMock()
 
     result = transform_player_game_batting(
         connection,
-        [_appearance(outcome_code="sac_fly")],
+        [_appearance(outcome_code=outcome_code)],
     )
 
     assert result == [_row(sacrifice_flies=1)]
+    assert result[0].at_bats == 0
 
 
 def test_sacrifice_bunt():
@@ -194,6 +196,7 @@ def test_sacrifice_bunt():
         "force_out",
         "grounded_into_double_play",
         "double_play",
+        "triple_play",
         "fielders_choice",
         "fielders_choice_out",
     ],
@@ -207,6 +210,7 @@ def test_ordinary_out_outcomes(outcome_code: str):
     )
 
     assert result == [_row(at_bats=1)]
+    assert result[0].sacrifice_flies == 0
 
 
 def test_catcher_interf():
@@ -349,7 +353,7 @@ def test_transformation_does_not_manage_transactions():
 
 
 def _create_engine() -> Engine:
-    return create_engine(settings.database_url)
+    return create_test_engine()
 
 
 @contextmanager

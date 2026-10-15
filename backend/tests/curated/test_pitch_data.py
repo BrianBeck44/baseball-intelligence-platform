@@ -3,16 +3,18 @@
 from contextlib import contextmanager
 from dataclasses import fields
 from datetime import date
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import Column, Integer, MetaData, Table, text
 from sqlalchemy.engine import Connection, Engine
 
-from app.core.config import settings
+from tests.db import create_test_engine
 from app.curated.pitch_data import (
     CuratedPitch,
     _PITCH_INSERT_BATCH_SIZE,
+    _PLATE_APPEARANCE_LOOKUP_BATCH_SIZE,
+    _plate_appearance_ids_by_game_at_bat,
     load_pitches,
     transform_pitches,
 )
@@ -70,7 +72,7 @@ _MEASUREMENT_FIELDS = (
 
 
 def _create_engine() -> Engine:
-    return create_engine(settings.database_url)
+    return create_test_engine()
 
 
 @contextmanager
@@ -937,3 +939,92 @@ def test_load_pitches_inserts_more_than_one_batch():
             assert stored == pitch_count
     finally:
         engine.dispose()
+
+
+def _plate_appearance_lookup_table() -> Table:
+    metadata = MetaData()
+    return Table(
+        "plate_appearance",
+        metadata,
+        Column("game_id", Integer),
+        Column("at_bat_number", Integer),
+        Column("plate_appearance_id", Integer),
+        schema="curated",
+    )
+
+
+def _appearance_keys(count: int) -> list[tuple[int, int]]:
+    return [(index, 1) for index in range(1, count + 1)]
+
+
+def _execute_lookup_batch(statement):
+    compiled = statement.compile()
+    pairs = list(compiled.params["param_1"])
+    result = MagicMock()
+    result.all.return_value = [
+        (game_id, at_bat_number, game_id * 1000 + at_bat_number)
+        for game_id, at_bat_number in pairs
+    ]
+    return result, pairs
+
+
+def test_empty_plate_appearance_lookup_executes_no_sql():
+    connection = MagicMock()
+
+    result = _plate_appearance_ids_by_game_at_bat(connection, [])
+
+    assert result == {}
+    connection.execute.assert_not_called()
+
+
+def test_plate_appearance_lookup_uses_one_query_for_500_keys():
+    connection = MagicMock()
+    keys = _appearance_keys(_PLATE_APPEARANCE_LOOKUP_BATCH_SIZE)
+    captured: list[list[tuple[int, int]]] = []
+
+    def execute(statement):
+        result, pairs = _execute_lookup_batch(statement)
+        captured.append(pairs)
+        return result
+
+    connection.execute.side_effect = execute
+
+    with patch(
+        "app.curated.pitch_data._curated_table",
+        return_value=_plate_appearance_lookup_table(),
+    ):
+        mapping = _plate_appearance_ids_by_game_at_bat(connection, keys)
+
+    assert connection.execute.call_count == 1
+    assert len(captured[0]) == _PLATE_APPEARANCE_LOOKUP_BATCH_SIZE
+    assert mapping == {
+        (game_id, at_bat_number): game_id * 1000 + at_bat_number
+        for game_id, at_bat_number in keys
+    }
+
+
+def test_plate_appearance_lookup_batches_more_than_500_keys():
+    connection = MagicMock()
+    keys = _appearance_keys(_PLATE_APPEARANCE_LOOKUP_BATCH_SIZE + 1)
+    captured: list[list[tuple[int, int]]] = []
+
+    def execute(statement):
+        result, pairs = _execute_lookup_batch(statement)
+        captured.append(pairs)
+        return result
+
+    connection.execute.side_effect = execute
+
+    with patch(
+        "app.curated.pitch_data._curated_table",
+        return_value=_plate_appearance_lookup_table(),
+    ):
+        mapping = _plate_appearance_ids_by_game_at_bat(connection, keys)
+
+    assert connection.execute.call_count == 2
+    assert len(captured[0]) == _PLATE_APPEARANCE_LOOKUP_BATCH_SIZE
+    assert len(captured[1]) == 1
+    assert mapping == {
+        (game_id, at_bat_number): game_id * 1000 + at_bat_number
+        for game_id, at_bat_number in keys
+    }

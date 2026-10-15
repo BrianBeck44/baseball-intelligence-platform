@@ -2,19 +2,23 @@
 
 from contextlib import contextmanager
 from datetime import date
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from sqlalchemy.engine import Connection, Engine
 
-from app.core.config import settings
-from app.curated.game_player_data import GamePlayerLoadResult, load_game_players
+from tests.db import create_test_engine
+from app.curated.game_player_data import (
+    GamePlayerLoadResult,
+    _GAME_PLAYER_INSERT_BATCH_SIZE,
+    load_game_players,
+)
 from app.curated.statcast_game_player_data import StatcastGamePlayer
 
 
 def _create_engine() -> Engine:
-    return create_engine(settings.database_url)
+    return create_test_engine()
 
 
 @contextmanager
@@ -569,3 +573,100 @@ def test_successful_load_does_not_commit_or_rollback():
             connection.rollback.assert_not_called()
     finally:
         engine.dispose()
+
+
+def _statcast_game_players(count: int) -> list[StatcastGamePlayer]:
+    return [
+        StatcastGamePlayer(
+            mlb_game_pk=index,
+            player_id=index,
+            team_code="NYY",
+        )
+        for index in range(count)
+    ]
+
+
+def _patch_game_player_lookups(count: int):
+    game_ids = {index: 1_000 + index for index in range(count)}
+    player_ids = {index: 2_000 + index for index in range(count)}
+    team_ids = {"NYY": 7}
+    statement = MagicMock()
+    statement.values.return_value = statement
+    statement.on_conflict_do_update.return_value = statement
+    return (
+        patch(
+            "app.curated.game_player_data._game_ids_by_mlb_game_pk",
+            return_value=game_ids,
+        ),
+        patch(
+            "app.curated.game_player_data._player_ids_by_mlb_player_id",
+            return_value=player_ids,
+        ),
+        patch(
+            "app.curated.game_player_data._team_ids_by_code",
+            return_value=team_ids,
+        ),
+        patch(
+            "app.curated.game_player_data._curated_table",
+            return_value=MagicMock(),
+        ),
+        patch(
+            "app.curated.game_player_data.insert",
+            return_value=statement,
+        ),
+        statement,
+    )
+
+
+def test_fewer_than_500_rows_makes_one_database_write():
+    connection = MagicMock()
+    count = _GAME_PLAYER_INSERT_BATCH_SIZE - 1
+    *patches, statement = _patch_game_player_lookups(count)
+
+    with patches[0], patches[1], patches[2], patches[3], patches[4]:
+        result = load_game_players(connection, _statcast_game_players(count))
+
+    statement.values.assert_called_once()
+    assert len(statement.values.call_args.args[0]) == count
+    connection.execute.assert_called_once_with(statement)
+    assert result == GamePlayerLoadResult(
+        game_players_supplied=count,
+        game_players_loaded=count,
+    )
+
+
+def test_exactly_500_rows_makes_one_database_write():
+    connection = MagicMock()
+    count = _GAME_PLAYER_INSERT_BATCH_SIZE
+    *patches, statement = _patch_game_player_lookups(count)
+
+    with patches[0], patches[1], patches[2], patches[3], patches[4]:
+        result = load_game_players(connection, _statcast_game_players(count))
+
+    statement.values.assert_called_once()
+    assert len(statement.values.call_args.args[0]) == count
+    connection.execute.assert_called_once_with(statement)
+    assert result == GamePlayerLoadResult(
+        game_players_supplied=count,
+        game_players_loaded=count,
+    )
+
+
+def test_more_than_500_rows_makes_multiple_database_writes():
+    connection = MagicMock()
+    count = _GAME_PLAYER_INSERT_BATCH_SIZE + 1
+    *patches, statement = _patch_game_player_lookups(count)
+
+    with patches[0], patches[1], patches[2], patches[3], patches[4]:
+        result = load_game_players(connection, _statcast_game_players(count))
+
+    assert statement.values.call_count == 2
+    assert len(statement.values.call_args_list[0].args[0]) == (
+        _GAME_PLAYER_INSERT_BATCH_SIZE
+    )
+    assert len(statement.values.call_args_list[1].args[0]) == 1
+    assert connection.execute.call_count == 2
+    assert result == GamePlayerLoadResult(
+        game_players_supplied=count,
+        game_players_loaded=count,
+    )

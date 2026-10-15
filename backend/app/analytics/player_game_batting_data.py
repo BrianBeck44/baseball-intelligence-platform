@@ -9,6 +9,8 @@ from sqlalchemy import MetaData, Table, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.engine import Connection
 
+_ANALYTICS_WRITE_BATCH_SIZE = 500
+
 
 @dataclass(frozen=True)
 class PlayerGameBattingAppearance:
@@ -158,12 +160,14 @@ _OUTCOME_INCREMENTS: dict[str | None, _BattingIncrements] = {
     "strikeout": _STRIKEOUT,
     "strikeout_double_play": _STRIKEOUT,
     "sac_fly": _SAC_FLY,
+    "sac_fly_double_play": _SAC_FLY,
     "sac_bunt": _SAC_BUNT,
     "field_out": _AB,
     "field_error": _AB,
     "force_out": _AB,
     "grounded_into_double_play": _AB,
     "double_play": _AB,
+    "triple_play": _AB,
     "fielders_choice": _AB,
     "fielders_choice_out": _AB,
     "catcher_interf": _PA_ONLY,
@@ -230,8 +234,10 @@ def load_player_game_batting(
         return 0
 
     table = _analytics_table(connection)
-    statement = insert(table).values([asdict(row) for row in rows])
-    connection.execute(statement)
+    for start in range(0, len(rows), _ANALYTICS_WRITE_BATCH_SIZE):
+        batch = rows[start : start + _ANALYTICS_WRITE_BATCH_SIZE]
+        statement = insert(table).values([asdict(row) for row in batch])
+        connection.execute(statement)
     return len(rows)
 
 

@@ -4,12 +4,12 @@ from contextlib import contextmanager
 from dataclasses import asdict
 from unittest.mock import MagicMock
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from sqlalchemy.engine import Connection, Engine
 
 from app.analytics.player_season_pitching_data import PlayerSeasonPitching
 from app.analytics.player_season_pitching_loader import load_player_season_pitching
-from app.core.config import settings
+from tests.db import create_test_engine
 
 
 def _row(
@@ -40,7 +40,7 @@ def _row(
 
 
 def _create_engine() -> Engine:
-    return create_engine(settings.database_url)
+    return create_test_engine()
 
 
 @contextmanager

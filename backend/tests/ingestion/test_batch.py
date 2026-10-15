@@ -3,11 +3,11 @@
 from datetime import datetime, timezone
 
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import IntegrityError
 
-from app.core.config import settings
+from tests.db import create_test_engine
 from app.ingestion.batch import (
     STATUS_COMPLETED,
     STATUS_FAILED,
@@ -20,7 +20,7 @@ from app.ingestion.batch import (
 
 
 def _engine() -> Engine:
-    return create_engine(settings.database_url)
+    return create_test_engine()
 
 
 def _cleanup_ingestion_batches(engine: Engine, batch_ids: list[int]) -> None:

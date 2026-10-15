@@ -85,6 +85,96 @@ def test_multiple_returned_players_use_one_request():
     ]
 
 
+def _requested_person_ids(url: str) -> list[str]:
+    query = parse_qs(urlparse(url).query)
+    return query["personIds"][0].split(",")
+
+
+def test_fewer_than_100_ids_makes_one_request():
+    player_ids = list(range(1, 50))
+
+    with patch(
+        "app.mlb.stats_api._get_json",
+        return_value={"people": []},
+    ) as mock_get_json:
+        result = fetch_mlb_players(player_ids)
+
+    mock_get_json.assert_called_once()
+    assert _requested_person_ids(mock_get_json.call_args.args[0]) == [
+        str(player_id) for player_id in player_ids
+    ]
+    assert result == []
+
+
+def test_exactly_100_ids_makes_one_request():
+    player_ids = list(range(1, 101))
+
+    with patch(
+        "app.mlb.stats_api._get_json",
+        return_value={"people": []},
+    ) as mock_get_json:
+        fetch_mlb_players(player_ids)
+
+    mock_get_json.assert_called_once()
+    requested = _requested_person_ids(mock_get_json.call_args.args[0])
+    assert len(requested) == 100
+    assert requested == [str(player_id) for player_id in player_ids]
+
+
+def test_more_than_100_ids_makes_multiple_requests():
+    player_ids = list(range(1, 102))
+    first_payload = {
+        "people": [
+            {"id": player_id, "fullName": f"Player {player_id}"}
+            for player_id in range(1, 101)
+        ]
+    }
+    second_payload = {"people": [{"id": 101, "fullName": "Player 101"}]}
+
+    with patch(
+        "app.mlb.stats_api._get_json",
+        side_effect=[first_payload, second_payload],
+    ) as mock_get_json:
+        result = fetch_mlb_players(player_ids)
+
+    assert mock_get_json.call_count == 2
+    assert _requested_person_ids(mock_get_json.call_args_list[0].args[0]) == [
+        str(player_id) for player_id in range(1, 101)
+    ]
+    assert _requested_person_ids(mock_get_json.call_args_list[1].args[0]) == ["101"]
+    assert result == [
+        MlbPlayer(mlb_player_id=player_id, full_name=f"Player {player_id}")
+        for player_id in player_ids
+    ]
+
+
+def test_duplicate_ids_are_not_requested_twice():
+    player_ids = list(range(1, 151)) + list(range(1, 151))
+
+    with patch(
+        "app.mlb.stats_api._get_json",
+        side_effect=[{"people": []}, {"people": []}],
+    ) as mock_get_json:
+        fetch_mlb_players(player_ids)
+
+    assert mock_get_json.call_count == 2
+    requested = [
+        person_id
+        for call in mock_get_json.call_args_list
+        for person_id in _requested_person_ids(call.args[0])
+    ]
+    assert requested == [str(player_id) for player_id in range(1, 151)]
+    assert len(requested) == len(set(requested))
+
+
+def test_empty_player_ids_does_not_call_get_json():
+    with patch("app.mlb.stats_api._get_json") as mock_get_json:
+        result = fetch_mlb_players([])
+
+    assert result == []
+    mock_get_json.assert_not_called()
+
+
 @pytest.mark.parametrize(
     "people",
     [
