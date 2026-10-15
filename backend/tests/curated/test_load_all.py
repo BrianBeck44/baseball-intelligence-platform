@@ -4,10 +4,10 @@ from contextlib import contextmanager
 from datetime import date, datetime, timezone
 from unittest.mock import MagicMock, call, patch
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from sqlalchemy.engine import Connection, Engine
 
-from app.core.config import settings
+from tests.db import create_test_engine
 from app.curated.game_data import GameLoadResult
 from app.curated.game_player_data import GamePlayerLoadResult
 from app.curated.game_team_data import GameTeamLoadResult
@@ -34,7 +34,7 @@ _CURATED_TABLES = (
 
 
 def _create_engine() -> Engine:
-    return create_engine(settings.database_url)
+    return create_test_engine()
 
 
 @contextmanager

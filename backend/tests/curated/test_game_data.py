@@ -5,16 +5,16 @@ from datetime import date
 from unittest.mock import MagicMock
 
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from sqlalchemy.engine import Connection, Engine
 
-from app.core.config import settings
+from tests.db import create_test_engine
 from app.curated.game_data import GameLoadResult, load_games
 from app.curated.statcast_game_data import StatcastGame
 
 
 def _create_engine() -> Engine:
-    return create_engine(settings.database_url)
+    return create_test_engine()
 
 
 @contextmanager

@@ -1,12 +1,18 @@
 """Schema tests for curated.game_team."""
 
+from contextlib import contextmanager
 from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, text
+from alembic.script import ScriptDirectory
+from sqlalchemy import text
 
-from app.core.config import settings
+from tests.db import (
+    configure_alembic_test_database,
+    create_test_engine,
+    require_connected_test_database,
+)
 
 
 GAME_TEAM_REVISION = "a3024cf4ca66"
@@ -15,13 +21,20 @@ BACKEND_DIR = Path(__file__).resolve().parents[2]
 
 
 def _engine():
-    return create_engine(settings.database_url)
+    return create_test_engine()
 
 
 def _alembic_config() -> Config:
     config = Config(str(BACKEND_DIR / "alembic.ini"))
     config.set_main_option("script_location", str(BACKEND_DIR / "alembic"))
     return config
+
+
+@contextmanager
+def _alembic_on_test_database(engine):
+    with configure_alembic_test_database():
+        require_connected_test_database(engine)
+        yield _alembic_config()
 
 
 def _fetch_columns(connection):
@@ -57,6 +70,28 @@ def _fetch_constraints(connection):
     ).mappings().all()
 
 
+def _alembic_version(engine) -> str:
+    with engine.connect() as connection:
+        return connection.execute(
+            text("SELECT version_num FROM alembic_version")
+        ).scalar_one()
+
+
+def _position_at_revision(engine, config, revision: str) -> None:
+    current = _alembic_version(engine)
+    if current == revision:
+        return
+    script = ScriptDirectory.from_config(config)
+    already_at_or_after = any(
+        rev.revision == revision
+        for rev in script.walk_revisions(base="base", head=current)
+    )
+    if already_at_or_after:
+        command.downgrade(config, revision)
+    else:
+        command.upgrade(config, revision)
+
+
 def _table_exists(connection) -> bool:
     return connection.execute(
         text(
@@ -74,9 +109,10 @@ def _table_exists(connection) -> bool:
 
 def test_game_team_table_has_expected_columns():
     engine = _engine()
-    command.upgrade(_alembic_config(), GAME_TEAM_REVISION)
-
     try:
+        with _alembic_on_test_database(engine) as config:
+            command.upgrade(config, GAME_TEAM_REVISION)
+
         with engine.connect() as connection:
             columns = {
                 row["column_name"]: row for row in _fetch_columns(connection)
@@ -99,9 +135,10 @@ def test_game_team_table_has_expected_columns():
 
 def test_game_team_primary_key_exists():
     engine = _engine()
-    command.upgrade(_alembic_config(), GAME_TEAM_REVISION)
-
     try:
+        with _alembic_on_test_database(engine) as config:
+            command.upgrade(config, GAME_TEAM_REVISION)
+
         with engine.connect() as connection:
             constraints = {
                 row["conname"]: row for row in _fetch_constraints(connection)
@@ -115,9 +152,10 @@ def test_game_team_primary_key_exists():
 
 def test_game_team_game_id_team_id_is_unique():
     engine = _engine()
-    command.upgrade(_alembic_config(), GAME_TEAM_REVISION)
-
     try:
+        with _alembic_on_test_database(engine) as config:
+            command.upgrade(config, GAME_TEAM_REVISION)
+
         with engine.connect() as connection:
             constraints = {
                 row["conname"]: row for row in _fetch_constraints(connection)
@@ -133,9 +171,10 @@ def test_game_team_game_id_team_id_is_unique():
 
 def test_game_team_foreign_keys_reference_game_and_team():
     engine = _engine()
-    command.upgrade(_alembic_config(), GAME_TEAM_REVISION)
-
     try:
+        with _alembic_on_test_database(engine) as config:
+            command.upgrade(config, GAME_TEAM_REVISION)
+
         with engine.connect() as connection:
             constraints = {
                 row["conname"]: row for row in _fetch_constraints(connection)
@@ -160,9 +199,10 @@ def test_game_team_foreign_keys_reference_game_and_team():
 
 def test_home_away_is_not_null():
     engine = _engine()
-    command.upgrade(_alembic_config(), GAME_TEAM_REVISION)
-
     try:
+        with _alembic_on_test_database(engine) as config:
+            command.upgrade(config, GAME_TEAM_REVISION)
+
         with engine.connect() as connection:
             columns = {
                 row["column_name"]: row for row in _fetch_columns(connection)
@@ -174,9 +214,10 @@ def test_home_away_is_not_null():
 
 def test_home_away_check_constraint_exists():
     engine = _engine()
-    command.upgrade(_alembic_config(), GAME_TEAM_REVISION)
-
     try:
+        with _alembic_on_test_database(engine) as config:
+            command.upgrade(config, GAME_TEAM_REVISION)
+
         with engine.connect() as connection:
             constraints = {
                 row["conname"]: row for row in _fetch_constraints(connection)
@@ -192,19 +233,30 @@ def test_home_away_check_constraint_exists():
 
 def test_downgrade_removes_game_team_table():
     engine = _engine()
-    config = _alembic_config()
-    command.upgrade(config, GAME_TEAM_REVISION)
-
     try:
-        with engine.connect() as connection:
-            assert _table_exists(connection) is True
+        with _alembic_on_test_database(engine) as config:
+            try:
+                require_connected_test_database(engine)
+                _position_at_revision(engine, config, GAME_TEAM_REVISION)
+                assert _alembic_version(engine) == GAME_TEAM_REVISION
 
-        command.downgrade(config, PREVIOUS_REVISION)
+                require_connected_test_database(engine)
+                command.upgrade(config, GAME_TEAM_REVISION)
+                assert _alembic_version(engine) == GAME_TEAM_REVISION
 
-        with engine.connect() as connection:
-            assert _table_exists(connection) is False
-            constraints = _fetch_constraints(connection)
-            assert constraints == []
+                with engine.connect() as connection:
+                    assert _table_exists(connection) is True
+
+                require_connected_test_database(engine)
+                command.downgrade(config, PREVIOUS_REVISION)
+                assert _alembic_version(engine) == PREVIOUS_REVISION
+
+                with engine.connect() as connection:
+                    assert _table_exists(connection) is False
+                    constraints = _fetch_constraints(connection)
+                    assert constraints == []
+            finally:
+                require_connected_test_database(engine)
+                command.upgrade(config, "head")
     finally:
-        command.upgrade(config, "head")
         engine.dispose()

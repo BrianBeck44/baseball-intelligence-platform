@@ -9,13 +9,10 @@ from sqlalchemy.engine import Connection
 
 
 _CONTEXT_FIELDS = (
-    "batter",
     "home_team",
     "away_team",
     "inning",
     "inning_topbot",
-    "stand",
-    "p_throws",
 )
 
 
@@ -41,9 +38,13 @@ def get_statcast_plate_appearances(
 
     Rows missing required plate-appearance context are ignored. Only
     ``Top`` and ``Bot`` half-innings are accepted. Conflicting non-null
-    contextual or ``events`` values for the same plate appearance raise
-    ValueError. Multiple pitchers in one plate appearance are allowed;
-    ``pitcher_id`` is taken from the lowest ``pitch_number``.
+    ``home_team``, ``away_team``, ``inning``, ``inning_topbot``, or
+    ``events`` values for the same plate appearance raise ValueError.
+
+    Mid-plate-appearance substitutions are allowed. The first pitch
+    (``MIN(pitch_number)``) supplies pitcher context: ``pitcher_id`` and
+    ``p_throws``. The terminal pitch (``MAX(pitch_number)``) supplies
+    batter context: ``batter_id`` and ``stand``.
     """
     metadata = MetaData()
     statcast_pitch = Table(
@@ -82,6 +83,7 @@ def get_statcast_plate_appearances(
         "events",
     )
 
+    # First pitch supplies pitcher context (pitcher, p_throws).
     first_pitch_numbers = (
         select(
             statcast_pitch.c.game_pk,
@@ -95,11 +97,12 @@ def get_statcast_plate_appearances(
         )
         .subquery()
     )
-    first_pitchers = (
+    first_pitch_context = (
         select(
             statcast_pitch.c.game_pk,
             statcast_pitch.c.at_bat_number,
             statcast_pitch.c.pitcher,
+            statcast_pitch.c.p_throws,
         )
         .where(complete_rows)
         .join(
@@ -117,40 +120,85 @@ def get_statcast_plate_appearances(
         .subquery()
     )
 
-    rows = connection.execute(
+    # Terminal pitch supplies batter context (batter, stand).
+    terminal_pitch_numbers = (
+        select(
+            statcast_pitch.c.game_pk,
+            statcast_pitch.c.at_bat_number,
+            func.max(statcast_pitch.c.pitch_number).label("pitch_number"),
+        )
+        .where(complete_rows)
+        .group_by(
+            statcast_pitch.c.game_pk,
+            statcast_pitch.c.at_bat_number,
+        )
+        .subquery()
+    )
+    terminal_pitch_context = (
         select(
             statcast_pitch.c.game_pk,
             statcast_pitch.c.at_bat_number,
             statcast_pitch.c.batter,
-            first_pitchers.c.pitcher,
+            statcast_pitch.c.stand,
+        )
+        .where(complete_rows)
+        .join(
+            terminal_pitch_numbers,
+            (statcast_pitch.c.game_pk == terminal_pitch_numbers.c.game_pk)
+            & (
+                statcast_pitch.c.at_bat_number
+                == terminal_pitch_numbers.c.at_bat_number
+            )
+            & (
+                statcast_pitch.c.pitch_number
+                == terminal_pitch_numbers.c.pitch_number
+            ),
+        )
+        .subquery()
+    )
+
+    rows = connection.execute(
+        select(
+            statcast_pitch.c.game_pk,
+            statcast_pitch.c.at_bat_number,
+            terminal_pitch_context.c.batter,
+            first_pitch_context.c.pitcher,
             statcast_pitch.c.home_team,
             statcast_pitch.c.away_team,
             statcast_pitch.c.inning,
             statcast_pitch.c.inning_topbot,
-            statcast_pitch.c.stand,
-            statcast_pitch.c.p_throws,
+            terminal_pitch_context.c.stand,
+            first_pitch_context.c.p_throws,
             func.max(statcast_pitch.c.events).label("events"),
         )
         .join(
-            first_pitchers,
-            (statcast_pitch.c.game_pk == first_pitchers.c.game_pk)
+            first_pitch_context,
+            (statcast_pitch.c.game_pk == first_pitch_context.c.game_pk)
             & (
                 statcast_pitch.c.at_bat_number
-                == first_pitchers.c.at_bat_number
+                == first_pitch_context.c.at_bat_number
+            ),
+        )
+        .join(
+            terminal_pitch_context,
+            (statcast_pitch.c.game_pk == terminal_pitch_context.c.game_pk)
+            & (
+                statcast_pitch.c.at_bat_number
+                == terminal_pitch_context.c.at_bat_number
             ),
         )
         .where(complete_rows)
         .group_by(
             statcast_pitch.c.game_pk,
             statcast_pitch.c.at_bat_number,
-            statcast_pitch.c.batter,
-            first_pitchers.c.pitcher,
+            terminal_pitch_context.c.batter,
+            first_pitch_context.c.pitcher,
             statcast_pitch.c.home_team,
             statcast_pitch.c.away_team,
             statcast_pitch.c.inning,
             statcast_pitch.c.inning_topbot,
-            statcast_pitch.c.stand,
-            statcast_pitch.c.p_throws,
+            terminal_pitch_context.c.stand,
+            first_pitch_context.c.p_throws,
         )
         .order_by(statcast_pitch.c.game_pk, statcast_pitch.c.at_bat_number)
     ).all()

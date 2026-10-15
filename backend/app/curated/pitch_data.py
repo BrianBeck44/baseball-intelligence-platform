@@ -12,6 +12,7 @@ from sqlalchemy.engine import Connection
 from app.curated.statcast_pitch_data import StatcastPitch
 
 _PITCH_INSERT_BATCH_SIZE = 500
+_PLATE_APPEARANCE_LOOKUP_BATCH_SIZE = 500
 
 
 @dataclass(frozen=True)
@@ -303,27 +304,35 @@ def _plate_appearance_ids_by_game_at_bat(
     connection: Connection,
     keys: Iterable[tuple[int, int]],
 ) -> dict[tuple[int, int], int]:
-    appearance_keys = set(keys)
+    appearance_keys = list(set(keys))
     if not appearance_keys:
         return {}
 
     plate_appearance = _curated_table(connection, "plate_appearance")
-    rows = connection.execute(
-        select(
-            plate_appearance.c.game_id,
-            plate_appearance.c.at_bat_number,
-            plate_appearance.c.plate_appearance_id,
-        ).where(
-            tuple_(
+    mapping: dict[tuple[int, int], int] = {}
+    for start in range(0, len(appearance_keys), _PLATE_APPEARANCE_LOOKUP_BATCH_SIZE):
+        batch = appearance_keys[
+            start : start + _PLATE_APPEARANCE_LOOKUP_BATCH_SIZE
+        ]
+        rows = connection.execute(
+            select(
                 plate_appearance.c.game_id,
                 plate_appearance.c.at_bat_number,
-            ).in_(list(appearance_keys))
+                plate_appearance.c.plate_appearance_id,
+            ).where(
+                tuple_(
+                    plate_appearance.c.game_id,
+                    plate_appearance.c.at_bat_number,
+                ).in_(batch)
+            )
+        ).all()
+        mapping.update(
+            {
+                (int(game_id), int(at_bat_number)): int(plate_appearance_id)
+                for game_id, at_bat_number, plate_appearance_id in rows
+            }
         )
-    ).all()
-    return {
-        (int(game_id), int(at_bat_number)): int(plate_appearance_id)
-        for game_id, at_bat_number, plate_appearance_id in rows
-    }
+    return mapping
 
 
 def _pitch_type_ids_by_code(

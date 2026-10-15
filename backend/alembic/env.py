@@ -5,6 +5,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from sqlalchemy import create_engine
 from sqlalchemy import pool
+from sqlalchemy import text
 
 from alembic import context
 
@@ -32,10 +33,47 @@ if not database_url:
 # target_metadata = mymodel.Base.metadata
 target_metadata = None
 
+# Set only by tests.db.configure_alembic_test_database(). The development
+# Alembic CLI leaves this unset and is unchanged.
+_ALEMBIC_TEST_DATABASE_GUARD_ENV = "ALEMBIC_TEST_DATABASE_GUARD"
+_ALEMBIC_TEST_DATABASE_GUARD_VALUE = "1"
+_REQUIRED_TEST_DATABASE_NAME = "baseball_intelligence_test"
+
 # other values from the config, defined by the needs of env.py,
 # can be acquired:
 # my_important_option = config.get_main_option("my_important_option")
 # ... etc.
+
+
+def _alembic_test_database_guard_is_active() -> bool:
+    return (
+        os.environ.get(_ALEMBIC_TEST_DATABASE_GUARD_ENV, "").strip()
+        == _ALEMBIC_TEST_DATABASE_GUARD_VALUE
+    )
+
+
+def _require_alembic_connection_is_test_database(connection) -> None:
+    """Abort guarded schema tests that are not on baseball_intelligence_test.
+
+    The live connection is authoritative. A stale or incorrect
+    DATABASE_URL cannot bypass this check.
+    """
+    if not _alembic_test_database_guard_is_active():
+        return
+    connected_name = connection.execute(
+        text("SELECT current_database()")
+    ).scalar_one()
+    if connected_name != _REQUIRED_TEST_DATABASE_NAME:
+        raise RuntimeError(
+            "Alembic test guard requires the active database to be "
+            f"{_REQUIRED_TEST_DATABASE_NAME}."
+        )
+    # The guard SELECT autobegins a SQLAlchemy 2.x transaction. Alembic
+    # treats that as an external transaction and will not commit
+    # migration DDL. Roll it back so Alembic can manage its own
+    # transaction. Reached only when the test guard is active.
+    if connection.in_transaction():
+        connection.rollback()
 
 
 def run_migrations_offline() -> None:
@@ -50,6 +88,11 @@ def run_migrations_offline() -> None:
     script output.
 
     """
+    if _alembic_test_database_guard_is_active():
+        raise RuntimeError(
+            "Alembic test guard forbids offline migrations because the "
+            "active database cannot be verified."
+        )
     context.configure(
         url=database_url,
         target_metadata=target_metadata,
@@ -71,6 +114,7 @@ def run_migrations_online() -> None:
     connectable = create_engine(database_url, poolclass=pool.NullPool)
 
     with connectable.connect() as connection:
+        _require_alembic_connection_is_test_database(connection)
         context.configure(
             connection=connection, target_metadata=target_metadata
         )

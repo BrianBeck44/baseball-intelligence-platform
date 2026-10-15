@@ -3,16 +3,16 @@
 from contextlib import contextmanager
 from unittest.mock import MagicMock
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from sqlalchemy.engine import Connection, Engine
 
-from app.core.config import settings
+from tests.db import create_test_engine
 from app.curated.team_data import load_mlb_teams
 from app.mlb.stats_api import MlbTeam
 
 
 def _create_engine() -> Engine:
-    return create_engine(settings.database_url)
+    return create_test_engine()
 
 
 @contextmanager

@@ -3,16 +3,16 @@
 from datetime import date, datetime, timezone
 
 import pandas as pd
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from sqlalchemy.engine import Connection, Engine
 
-from app.core.config import settings
+from tests.db import create_test_engine
 from app.ingestion.loader import load_statcast_chunk
 from app.ingestion.validation import INVALID_SOURCE_KEY, RejectionRecord
 
 
 def _engine() -> Engine:
-    return create_engine(settings.database_url)
+    return create_test_engine()
 
 
 def _create_ingestion_batch(connection: Connection, source_name: str) -> int:

@@ -5,10 +5,10 @@ from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from sqlalchemy.engine import Connection, Engine
 
-from app.core.config import settings
+from tests.db import create_test_engine
 from app.curated.statcast_plate_appearance_data import (
     StatcastPlateAppearance,
     get_statcast_plate_appearances,
@@ -17,7 +17,7 @@ from app.ingestion.batch import create_ingestion_batch
 
 
 def _create_engine() -> Engine:
-    return create_engine(settings.database_url)
+    return create_test_engine()
 
 
 @contextmanager
@@ -550,13 +550,13 @@ def test_conflicting_events_values_raise_value_error():
                 events="double",
             )
 
-            with pytest.raises(ValueError, match=str(game_pk)):
+            with pytest.raises(ValueError, match=rf"events.*game_pk={game_pk}"):
                 get_statcast_plate_appearances(connection)
     finally:
         engine.dispose()
 
 
-def test_conflicting_batter_values_raise_value_error():
+def test_pinch_hit_uses_terminal_batter():
     engine = _create_engine()
     game_pk = 900000861
 
@@ -574,10 +574,87 @@ def test_conflicting_batter_values_raise_value_error():
                 game_pk=game_pk,
                 batter=3003,
                 pitch_number=2,
+                events="strikeout",
             )
 
-            with pytest.raises(ValueError, match=rf"batter.*game_pk={game_pk}"):
-                get_statcast_plate_appearances(connection)
+            result = get_statcast_plate_appearances(connection)
+
+            assert len(result) == 1
+            assert result == [
+                StatcastPlateAppearance(
+                    mlb_game_pk=game_pk,
+                    at_bat_number=1,
+                    batter_id=3003,
+                    pitcher_id=2002,
+                    batter_team_code="BOS",
+                    pitcher_team_code="NYY",
+                    inning=1,
+                    inning_topbot="Top",
+                    stand="L",
+                    p_throws="R",
+                    outcome_code="strikeout",
+                )
+            ]
+    finally:
+        engine.dispose()
+
+
+def test_long_plate_appearance_pinch_hit_uses_terminal_batter():
+    engine = _create_engine()
+    game_pk = 900000885
+
+    try:
+        with _isolated_connection(engine) as connection:
+            _clear_statcast_pitches(connection)
+            for pitch_number in range(1, 12):
+                _insert_pitch(
+                    connection,
+                    game_pk=game_pk,
+                    batter=1001,
+                    pitch_number=pitch_number,
+                )
+            _insert_pitch(
+                connection,
+                game_pk=game_pk,
+                batter=3003,
+                pitch_number=12,
+                events="single",
+            )
+
+            result = get_statcast_plate_appearances(connection)
+
+            assert len(result) == 1
+            assert result[0].batter_id == 3003
+            assert result[0].outcome_code == "single"
+    finally:
+        engine.dispose()
+
+
+def test_terminal_pitch_batter_is_used_when_events_is_null():
+    engine = _create_engine()
+    game_pk = 900000886
+
+    try:
+        with _isolated_connection(engine) as connection:
+            _clear_statcast_pitches(connection)
+            _insert_pitch(
+                connection,
+                game_pk=game_pk,
+                batter=1001,
+                pitch_number=1,
+            )
+            _insert_pitch(
+                connection,
+                game_pk=game_pk,
+                batter=3003,
+                pitch_number=2,
+            )
+
+            result = get_statcast_plate_appearances(connection)
+
+            assert len(result) == 1
+            assert result[0].batter_id == 3003
+            assert result[0].outcome_code is None
     finally:
         engine.dispose()
 
@@ -733,7 +810,7 @@ def test_conflicting_inning_topbot_values_raise_value_error():
         engine.dispose()
 
 
-def test_conflicting_stand_values_raise_value_error():
+def test_stand_follows_terminal_batter():
     engine = _create_engine()
     game_pk = 900000873
 
@@ -743,23 +820,88 @@ def test_conflicting_stand_values_raise_value_error():
             _insert_pitch(
                 connection,
                 game_pk=game_pk,
-                stand="L",
+                batter=1001,
+                stand="R",
                 pitch_number=1,
             )
             _insert_pitch(
                 connection,
                 game_pk=game_pk,
-                stand="R",
+                batter=3003,
+                stand="L",
                 pitch_number=2,
+                events="field_out",
             )
 
-            with pytest.raises(ValueError, match=rf"stand.*game_pk={game_pk}"):
-                get_statcast_plate_appearances(connection)
+            result = get_statcast_plate_appearances(connection)
+
+            assert len(result) == 1
+            assert result[0].batter_id == 3003
+            assert result[0].stand == "L"
+            assert result[0].outcome_code == "field_out"
     finally:
         engine.dispose()
 
 
-def test_conflicting_p_throws_values_raise_value_error():
+def test_pitcher_and_batter_changes_are_selected_independently():
+    engine = _create_engine()
+    game_pk = 900000887
+
+    try:
+        with _isolated_connection(engine) as connection:
+            _clear_statcast_pitches(connection)
+            _insert_pitch(
+                connection,
+                game_pk=game_pk,
+                batter=1001,
+                pitcher=2002,
+                stand="R",
+                p_throws="L",
+                pitch_number=1,
+            )
+            _insert_pitch(
+                connection,
+                game_pk=game_pk,
+                batter=1001,
+                pitcher=4004,
+                stand="R",
+                p_throws="R",
+                pitch_number=2,
+            )
+            _insert_pitch(
+                connection,
+                game_pk=game_pk,
+                batter=3003,
+                pitcher=4004,
+                stand="L",
+                p_throws="R",
+                pitch_number=3,
+                events="single",
+            )
+
+            result = get_statcast_plate_appearances(connection)
+
+            assert len(result) == 1
+            assert result == [
+                StatcastPlateAppearance(
+                    mlb_game_pk=game_pk,
+                    at_bat_number=1,
+                    batter_id=3003,
+                    pitcher_id=2002,
+                    batter_team_code="BOS",
+                    pitcher_team_code="NYY",
+                    inning=1,
+                    inning_topbot="Top",
+                    stand="L",
+                    p_throws="L",
+                    outcome_code="single",
+                )
+            ]
+    finally:
+        engine.dispose()
+
+
+def test_p_throws_comes_from_first_pitch():
     engine = _create_engine()
     game_pk = 900000874
 
@@ -779,8 +921,11 @@ def test_conflicting_p_throws_values_raise_value_error():
                 pitch_number=2,
             )
 
-            with pytest.raises(ValueError, match=rf"p_throws.*game_pk={game_pk}"):
-                get_statcast_plate_appearances(connection)
+            result = get_statcast_plate_appearances(connection)
+
+            assert len(result) == 1
+            assert result[0].p_throws == "L"
+            assert result[0].pitcher_id == 2002
     finally:
         engine.dispose()
 

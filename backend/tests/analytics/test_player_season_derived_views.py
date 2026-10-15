@@ -3,14 +3,14 @@
 from contextlib import contextmanager
 
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from sqlalchemy.engine import Connection, Engine
 
-from app.core.config import settings
+from tests.db import create_test_engine
 
 
 def _create_engine() -> Engine:
-    return create_engine(settings.database_url)
+    return create_test_engine()
 
 
 @contextmanager

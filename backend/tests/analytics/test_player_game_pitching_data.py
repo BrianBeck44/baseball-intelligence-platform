@@ -5,7 +5,7 @@ from datetime import date
 from unittest.mock import MagicMock
 
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from sqlalchemy.engine import Connection, Engine
 
 from app.analytics.player_game_pitching_data import (
@@ -14,7 +14,7 @@ from app.analytics.player_game_pitching_data import (
     get_player_game_pitching_appearances,
     transform_player_game_pitching,
 )
-from app.core.config import settings
+from tests.db import create_test_engine
 
 
 def _appearance(
@@ -242,9 +242,11 @@ def test_strikeout_double_play():
         "force_out",
         "grounded_into_double_play",
         "double_play",
+        "triple_play",
         "fielders_choice",
         "fielders_choice_out",
         "sac_fly",
+        "sac_fly_double_play",
         "sac_bunt",
         "catcher_interf",
         "truncated_pa",
@@ -404,7 +406,7 @@ def test_transformation_does_not_manage_transactions():
 
 
 def _create_engine() -> Engine:
-    return create_engine(settings.database_url)
+    return create_test_engine()
 
 
 @contextmanager

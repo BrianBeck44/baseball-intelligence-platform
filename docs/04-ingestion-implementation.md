@@ -767,7 +767,7 @@ There are currently 20 validation unit tests.
 
 Located in `tests/ingestion/test_loader.py`.
 
-These tests use the real PostgreSQL database configured through `app.core.config.settings.database_url`. They do not mock PostgreSQL or SQLAlchemy persistence behavior.
+These tests use the dedicated test database configured through `TEST_DATABASE_URL`. They do not mock PostgreSQL or SQLAlchemy persistence behavior.
 
 They cover:
 
@@ -787,7 +787,7 @@ PostgreSQL is the final enforcement boundary for source-key uniqueness, `ON CONF
 
 Located in `tests/ingestion/test_batch.py`.
 
-These tests use the real PostgreSQL database configured through `app.core.config.settings.database_url`. They do not mock PostgreSQL.
+These tests use the dedicated test database configured through `TEST_DATABASE_URL`. They do not mock PostgreSQL.
 
 They cover:
 
@@ -802,9 +802,76 @@ They cover:
 
 There are currently 8 batch persistence integration tests.
 
+### Test database configuration
+
+Integration tests must not use the development database `baseball_intelligence` or the application `DATABASE_URL` / `.env` settings.
+
+Required environment variable:
+
+```text
+TEST_DATABASE_URL
+```
+
+Expected database name:
+
+```text
+baseball_intelligence_test
+```
+
+`TEST_DATABASE_URL` must be present in the process environment. pytest does not read it from `.env`, and tests never fall back to `DATABASE_URL`. Missing, empty, non-PostgreSQL, development, or incorrectly named URLs raise `DatabaseConfigurationError` before any connection is opened. Error messages do not include the URL or credentials.
+
+Unit tests that do not create a database engine (for example `tests/ingestion/test_validation.py`) do not require `TEST_DATABASE_URL`.
+
+Application scripts and the Alembic CLI continue to use `DATABASE_URL`. Schema tests call `configure_alembic_test_database()` so in-process `alembic upgrade` / `downgrade` target the already-validated test URL. `ingest_statcast_file()` is patched in tests so its internal engine factory cannot use application settings.
+
+#### Creating and migrating `baseball_intelligence_test`
+
+Do this manually. Tests do not create the database.
+
+1. Confirm the development database is `baseball_intelligence` and leave it untouched.
+2. From the repository root, create the empty test database on the same PostgreSQL instance:
+
+```text
+docker compose exec postgres \
+  psql -U baseball -d postgres \
+  -c "CREATE DATABASE baseball_intelligence_test;"
+```
+
+3. Build the test connection URL from the existing local `DATABASE_URL` by changing only the database name to `baseball_intelligence_test`. Keep the same SQLAlchemy driver, user, password, host, and port.
+
+Example: if `DATABASE_URL` is `postgresql+psycopg://baseball:LOCAL_PASSWORD@localhost:5432/baseball_intelligence`, the test URL is `postgresql+psycopg://baseball:LOCAL_PASSWORD@localhost:5432/baseball_intelligence_test`.
+
+Apply migrations with that test URL exported for the Alembic command only. python-dotenv will not override an existing `DATABASE_URL`:
+
+```text
+cd backend
+DATABASE_URL=<existing DATABASE_URL with database name baseball_intelligence_test> \
+  alembic upgrade head
+```
+
+4. Export that same test URL as `TEST_DATABASE_URL` in the shell that will run pytest:
+
+```text
+export TEST_DATABASE_URL=<existing DATABASE_URL with database name baseball_intelligence_test>
+cd backend
+pytest
+```
+
+Do not set `TEST_DATABASE_URL` to `baseball_intelligence`. Do not run loaders against the test database unless that is the intended test setup.
+
+If a schema test is interrupted during a downgrade, restore the test database schema by running Alembic against `baseball_intelligence_test` only:
+
+```text
+cd backend
+DATABASE_URL=<existing DATABASE_URL with database name baseball_intelligence_test> \
+  alembic upgrade head
+```
+
+Never run this recovery command against `baseball_intelligence` or any other development database.
+
 ### Test isolation
 
-Loader and batch integration tests do not depend on manually inserted sample data and do not hard-code `ingestion_batch_id` values.
+Loader, batch, and Statcast orchestration integration tests commit through `engine.begin()` and then delete the rows they created. They do not depend on manually inserted sample data and do not hard-code `ingestion_batch_id` values.
 
 Each loader test:
 
@@ -814,6 +881,17 @@ Each loader test:
 * deletes `raw.statcast_pitch` and `raw.ingestion_rejection` rows before deleting the ingestion batch.
 
 Each batch test creates its own `raw.ingestion_batch` row with a unique `source_name` and deletes that row after the assertion.
+
+Statcast orchestration tests similarly commit, then delete by pytest-only `source_name` and `game_pk` values.
+
+Most curated and analytics integration tests use `_isolated_connection`: they begin a transaction, write or delete inside it, and always roll back. Those rollbacks include `DELETE FROM` statements against `raw.statcast_pitch`, `curated.pitch`, `curated.plate_appearance`, and analytics tables.
+
+Remaining isolation risks, now confined to `baseball_intelligence_test`:
+
+* Ingestion tests leave committed rows if a process is killed before cleanup.
+* Schema tests run Alembic upgrade/downgrade, which commit DDL and can temporarily drop tables before restoring `head`.
+* PostgreSQL identity sequences still advance for rolled-back inserts.
+* A loader that opened its own `engine.begin()` instead of using the passed connection would commit on the test database; `ingest_statcast_file` is the known production path and is patched in tests.
 
 ### Current test status
 

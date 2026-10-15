@@ -3,15 +3,15 @@
 from contextlib import contextmanager
 from datetime import date
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from sqlalchemy.engine import Connection, Engine
 
-from app.core.config import settings
+from tests.db import create_test_engine
 from app.curated.season_data import CuratedSeason, SeasonLoadResult, load_seasons
 
 
 def _create_engine() -> Engine:
-    return create_engine(settings.database_url)
+    return create_test_engine()
 
 
 @contextmanager

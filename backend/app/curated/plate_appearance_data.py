@@ -11,6 +11,8 @@ from sqlalchemy.engine import Connection
 
 from app.curated.statcast_plate_appearance_data import StatcastPlateAppearance
 
+_PLATE_APPEARANCE_INSERT_BATCH_SIZE = 500
+
 
 @dataclass(frozen=True)
 class CuratedPlateAppearance:
@@ -176,22 +178,24 @@ def load_plate_appearances(
     ]
 
     table = _curated_table(connection, "plate_appearance")
-    statement = insert(table).values(rows)
-    statement = statement.on_conflict_do_update(
-        index_elements=[table.c.game_id, table.c.at_bat_number],
-        set_={
-            "batter_id": statement.excluded.batter_id,
-            "pitcher_id": statement.excluded.pitcher_id,
-            "batter_team_id": statement.excluded.batter_team_id,
-            "pitcher_team_id": statement.excluded.pitcher_team_id,
-            "inning": statement.excluded.inning,
-            "inning_topbot": statement.excluded.inning_topbot,
-            "outcome_type_id": statement.excluded.outcome_type_id,
-            "stand": statement.excluded.stand,
-            "p_throws": statement.excluded.p_throws,
-        },
-    )
-    connection.execute(statement)
+    for start in range(0, len(rows), _PLATE_APPEARANCE_INSERT_BATCH_SIZE):
+        batch = rows[start : start + _PLATE_APPEARANCE_INSERT_BATCH_SIZE]
+        statement = insert(table).values(batch)
+        statement = statement.on_conflict_do_update(
+            index_elements=[table.c.game_id, table.c.at_bat_number],
+            set_={
+                "batter_id": statement.excluded.batter_id,
+                "pitcher_id": statement.excluded.pitcher_id,
+                "batter_team_id": statement.excluded.batter_team_id,
+                "pitcher_team_id": statement.excluded.pitcher_team_id,
+                "inning": statement.excluded.inning,
+                "inning_topbot": statement.excluded.inning_topbot,
+                "outcome_type_id": statement.excluded.outcome_type_id,
+                "stand": statement.excluded.stand,
+                "p_throws": statement.excluded.p_throws,
+            },
+        )
+        connection.execute(statement)
     return PlateAppearanceLoadResult(
         plate_appearances_supplied=plate_appearances_supplied,
         plate_appearances_loaded=plate_appearances_supplied,

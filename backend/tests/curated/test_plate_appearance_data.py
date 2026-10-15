@@ -2,16 +2,17 @@
 
 from contextlib import contextmanager
 from datetime import date
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from sqlalchemy.engine import Connection, Engine
 
-from app.core.config import settings
+from tests.db import create_test_engine
 from app.curated.plate_appearance_data import (
     CuratedPlateAppearance,
     PlateAppearanceLoadResult,
+    _PLATE_APPEARANCE_INSERT_BATCH_SIZE,
     load_plate_appearances,
     transform_plate_appearances,
 )
@@ -19,7 +20,7 @@ from app.curated.statcast_plate_appearance_data import StatcastPlateAppearance
 
 
 def _create_engine() -> Engine:
-    return create_engine(settings.database_url)
+    return create_test_engine()
 
 
 @contextmanager
@@ -1052,3 +1053,116 @@ def test_load_does_not_manage_transactions():
             connection.rollback.assert_not_called()
     finally:
         engine.dispose()
+
+
+def _curated_plate_appearances(count: int) -> list[CuratedPlateAppearance]:
+    return [
+        _curated_plate_appearance(
+            game_id=1,
+            at_bat_number=index,
+            batter_id=2,
+            pitcher_id=3,
+            batter_team_id=4,
+            pitcher_team_id=5,
+            outcome_type_id=6,
+        )
+        for index in range(1, count + 1)
+    ]
+
+
+def _patch_plate_appearance_insert():
+    statement = MagicMock()
+    statement.values.return_value = statement
+    statement.on_conflict_do_update.return_value = statement
+    table = MagicMock()
+    return (
+        patch(
+            "app.curated.plate_appearance_data._curated_table",
+            return_value=table,
+        ),
+        patch(
+            "app.curated.plate_appearance_data.insert",
+            return_value=statement,
+        ),
+        statement,
+        table,
+    )
+
+
+def test_fewer_than_500_rows_makes_one_database_write():
+    connection = MagicMock()
+    count = _PLATE_APPEARANCE_INSERT_BATCH_SIZE - 1
+    table_patch, insert_patch, statement, table = _patch_plate_appearance_insert()
+
+    with table_patch, insert_patch:
+        result = load_plate_appearances(
+            connection,
+            _curated_plate_appearances(count),
+        )
+
+    statement.values.assert_called_once()
+    assert len(statement.values.call_args.args[0]) == count
+    statement.on_conflict_do_update.assert_called_once()
+    assert statement.on_conflict_do_update.call_args.kwargs["index_elements"] == [
+        table.c.game_id,
+        table.c.at_bat_number,
+    ]
+    connection.execute.assert_called_once_with(statement)
+    assert result == PlateAppearanceLoadResult(
+        plate_appearances_supplied=count,
+        plate_appearances_loaded=count,
+    )
+
+
+def test_exactly_500_rows_makes_one_database_write():
+    connection = MagicMock()
+    count = _PLATE_APPEARANCE_INSERT_BATCH_SIZE
+    table_patch, insert_patch, statement, table = _patch_plate_appearance_insert()
+
+    with table_patch, insert_patch:
+        result = load_plate_appearances(
+            connection,
+            _curated_plate_appearances(count),
+        )
+
+    statement.values.assert_called_once()
+    assert len(statement.values.call_args.args[0]) == count
+    statement.on_conflict_do_update.assert_called_once()
+    assert statement.on_conflict_do_update.call_args.kwargs["index_elements"] == [
+        table.c.game_id,
+        table.c.at_bat_number,
+    ]
+    connection.execute.assert_called_once_with(statement)
+    assert result == PlateAppearanceLoadResult(
+        plate_appearances_supplied=count,
+        plate_appearances_loaded=count,
+    )
+
+
+def test_more_than_500_rows_makes_multiple_database_writes():
+    connection = MagicMock()
+    count = _PLATE_APPEARANCE_INSERT_BATCH_SIZE + 1
+    table_patch, insert_patch, statement, table = _patch_plate_appearance_insert()
+
+    with table_patch, insert_patch:
+        result = load_plate_appearances(
+            connection,
+            _curated_plate_appearances(count),
+        )
+
+    assert statement.values.call_count == 2
+    assert len(statement.values.call_args_list[0].args[0]) == (
+        _PLATE_APPEARANCE_INSERT_BATCH_SIZE
+    )
+    assert len(statement.values.call_args_list[1].args[0]) == 1
+    assert statement.on_conflict_do_update.call_count == 2
+    for call in statement.on_conflict_do_update.call_args_list:
+        assert call.kwargs["index_elements"] == [
+            table.c.game_id,
+            table.c.at_bat_number,
+        ]
+    assert connection.execute.call_count == 2
+    assert result == PlateAppearanceLoadResult(
+        plate_appearances_supplied=count,
+        plate_appearances_loaded=count,
+    )

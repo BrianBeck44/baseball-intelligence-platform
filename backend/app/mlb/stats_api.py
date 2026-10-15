@@ -16,6 +16,7 @@ from urllib.request import Request, urlopen
 
 PEOPLE_URL = "https://statsapi.mlb.com/api/v1/people"
 TEAMS_URL = "https://statsapi.mlb.com/api/v1/teams"
+_PLAYER_ID_BATCH_SIZE = 100
 
 
 @dataclass(frozen=True)
@@ -37,16 +38,19 @@ class MlbStatsApiError(ValueError):
 def fetch_mlb_players(player_ids: Collection[int]) -> list[MlbPlayer]:
     """Return player ID and full name for the given MLB person IDs.
 
-    Issues one ``/api/v1/people`` request using the ``personIds``
-    query parameter. An empty collection returns no players and does
-    not call the API.
+    Issues ``/api/v1/people`` requests using the ``personIds`` query
+    parameter in batches of 100 unique IDs. An empty collection
+    returns no players and does not call the API.
     """
     unique_ids = _unique_player_ids(player_ids)
     if not unique_ids:
         return []
 
-    payload = _get_json(_people_url(unique_ids))
-    return _parse_people(payload)
+    players: list[MlbPlayer] = []
+    for batch in _player_id_batches(unique_ids):
+        payload = _get_json(_people_url(batch))
+        players.extend(_parse_people(payload))
+    return players
 
 
 def fetch_mlb_teams(
@@ -86,6 +90,11 @@ def fetch_mlb_teams(
             teams_by_code[code] = team
 
     return [teams_by_code[code] for code in unique_codes if code in teams_by_code]
+
+
+def _player_id_batches(player_ids: list[int]) -> list[list[int]]:
+    size = _PLAYER_ID_BATCH_SIZE
+    return [player_ids[index:index + size] for index in range(0, len(player_ids), size)]
 
 
 def _unique_player_ids(player_ids: Iterable[int]) -> list[int]:

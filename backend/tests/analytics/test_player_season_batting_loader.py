@@ -5,12 +5,12 @@ from dataclasses import asdict
 from unittest.mock import MagicMock
 
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from sqlalchemy.engine import Connection, Engine
 
 from app.analytics.player_season_batting_data import PlayerSeasonBatting
 from app.analytics.player_season_batting_loader import load_player_season_batting
-from app.core.config import settings
+from tests.db import create_test_engine
 
 
 def _row(
@@ -63,7 +63,7 @@ def _row(
 
 
 def _create_engine() -> Engine:
-    return create_engine(settings.database_url)
+    return create_test_engine()
 
 
 @contextmanager

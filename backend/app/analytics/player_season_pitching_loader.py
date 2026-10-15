@@ -11,6 +11,8 @@ from sqlalchemy.engine import Connection
 
 from app.analytics.player_season_pitching_data import PlayerSeasonPitching
 
+_ANALYTICS_WRITE_BATCH_SIZE = 500
+
 _METRIC_COLUMNS = (
     "games",
     "batters_faced",
@@ -38,15 +40,17 @@ def load_player_season_pitching(
         return 0
 
     table = _analytics_table(connection)
-    statement = insert(table).values([asdict(row) for row in rows])
-    statement = statement.on_conflict_do_update(
-        index_elements=["player_id", "season_id"],
-        set_={
-            column: statement.excluded[column]
-            for column in _METRIC_COLUMNS
-        },
-    )
-    connection.execute(statement)
+    for start in range(0, len(rows), _ANALYTICS_WRITE_BATCH_SIZE):
+        batch = rows[start : start + _ANALYTICS_WRITE_BATCH_SIZE]
+        statement = insert(table).values([asdict(row) for row in batch])
+        statement = statement.on_conflict_do_update(
+            index_elements=["player_id", "season_id"],
+            set_={
+                column: statement.excluded[column]
+                for column in _METRIC_COLUMNS
+            },
+        )
+        connection.execute(statement)
     return len(rows)
 
 

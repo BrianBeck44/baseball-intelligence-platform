@@ -6,7 +6,7 @@ from datetime import date
 from unittest.mock import MagicMock
 
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from sqlalchemy.engine import Connection, Engine
 
 from app.analytics.player_pitch_type_effectiveness_data import (
@@ -16,7 +16,7 @@ from app.analytics.player_pitch_type_effectiveness_data import (
     load_player_pitch_type_effectiveness,
     transform_player_pitch_type_effectiveness,
 )
-from app.core.config import settings
+from tests.db import create_test_engine
 
 SLIDER = 10
 FASTBALL = 20
@@ -374,6 +374,7 @@ def test_terminal_pitch_receives_strikeout():
 @pytest.mark.parametrize(
     ("pitch_outcome_code", "whiffs", "balls_in_play", "fouls"),
     [
+        ("bunt_foul_tip", 0, 0, 1),
         ("foul", 0, 0, 1),
         ("foul_bunt", 0, 0, 1),
         ("foul_tip", 0, 0, 1),
@@ -414,6 +415,7 @@ def test_swing_outcomes(
         ("blocked_ball", 0),
         ("called_strike", 1),
         ("hit_by_pitch", 0),
+        ("pitchout", 0),
     ],
 )
 def test_non_swing_pitch_outcomes(pitch_outcome_code: str, called_strikes: int):
@@ -533,7 +535,13 @@ def test_null_outcome_codes_count_only_pitches_and_plate_appearances():
 
 @pytest.mark.parametrize(
     "pa_outcome_code",
-    ["field_out", "intent_walk", "strikeout_double_play"],
+    [
+        "field_out",
+        "intent_walk",
+        "strikeout_double_play",
+        "sac_fly_double_play",
+        "triple_play",
+    ],
 )
 def test_recognized_non_counted_pa_outcomes(pa_outcome_code: str):
     connection = MagicMock()
@@ -550,8 +558,10 @@ def test_recognized_non_counted_pa_outcomes(pa_outcome_code: str):
     )
 
     assert result == [_row()]
-    assert result[0].walks == 0
+    assert result[0].hits_allowed == 0
     assert result[0].strikeouts == 0
+    assert result[0].walks == 0
+    assert result[0].hit_by_pitch == 0
 
 
 def test_results_are_sorted_by_player_and_pitch_type():
@@ -585,7 +595,7 @@ def test_transformation_does_not_manage_transactions():
 
 
 def _create_engine() -> Engine:
-    return create_engine(settings.database_url)
+    return create_test_engine()
 
 
 @contextmanager

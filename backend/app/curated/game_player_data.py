@@ -11,6 +11,8 @@ from sqlalchemy.engine import Connection
 
 from app.curated.statcast_game_player_data import StatcastGamePlayer
 
+_GAME_PLAYER_INSERT_BATCH_SIZE = 500
+
 
 @dataclass(frozen=True)
 class GamePlayerLoadResult:
@@ -59,16 +61,18 @@ def load_game_players(
     ]
 
     table = _curated_table(connection, "game_player")
-    statement = insert(table).values(rows)
-    statement = statement.on_conflict_do_update(
-        index_elements=[table.c.game_id, table.c.player_id, table.c.team_id],
-        set_={
-            "game_id": statement.excluded.game_id,
-            "player_id": statement.excluded.player_id,
-            "team_id": statement.excluded.team_id,
-        },
-    )
-    connection.execute(statement)
+    for start in range(0, len(rows), _GAME_PLAYER_INSERT_BATCH_SIZE):
+        batch = rows[start : start + _GAME_PLAYER_INSERT_BATCH_SIZE]
+        statement = insert(table).values(batch)
+        statement = statement.on_conflict_do_update(
+            index_elements=[table.c.game_id, table.c.player_id, table.c.team_id],
+            set_={
+                "game_id": statement.excluded.game_id,
+                "player_id": statement.excluded.player_id,
+                "team_id": statement.excluded.team_id,
+            },
+        )
+        connection.execute(statement)
     return GamePlayerLoadResult(
         game_players_supplied=game_players_supplied,
         game_players_loaded=game_players_supplied,
