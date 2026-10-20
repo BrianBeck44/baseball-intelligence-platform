@@ -1,0 +1,120 @@
+:root {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+  color: #12202b;
+  background: #f4f1ea;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+.page {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 2rem 1.5rem 4rem;
+}
+
+.page-header h1 {
+  margin: 0 0 0.5rem;
+  font-size: 2rem;
+}
+
+.page-header p {
+  margin: 0 0 1.5rem;
+  color: #3d4f5c;
+}
+
+.history-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  align-items: flex-end;
+  margin-bottom: 1.5rem;
+}
+
+.history-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.history-form input {
+  min-width: 10rem;
+  padding: 0.5rem 0.65rem;
+  border: 1px solid #b7c0c7;
+  border-radius: 4px;
+  font: inherit;
+}
+
+.history-form button {
+  padding: 0.55rem 1rem;
+  border: 0;
+  border-radius: 4px;
+  background: #123d2a;
+  color: #fff;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.history-form button:disabled {
+  opacity: 0.7;
+  cursor: wait;
+}
+
+.status {
+  margin: 0 0 1rem;
+}
+
+.status.error {
+  color: #8a1f1f;
+}
+
+.results h2 {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: baseline;
+  font-size: 1.25rem;
+}
+
+.results .meta {
+  font-size: 0.95rem;
+  font-weight: 500;
+  color: #3d4f5c;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  background: #fff;
+}
+
+th,
+td {
+  padding: 0.6rem 0.7rem;
+  border-bottom: 1px solid #d8dee3;
+  text-align: left;
+}
+
+th {
+  background: #e8efe9;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}

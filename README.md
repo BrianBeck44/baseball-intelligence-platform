@@ -180,7 +180,11 @@ Build the REST API and application/service architecture.
 
 Build the user-facing baseball intelligence interface using React, TypeScript, and Tailwind CSS.
 
-**Status:** Planned
+**Status:** In Progress
+
+The initial Vite + React + TypeScript app lives in `frontend/`. It
+loads player game history from `GET /players/{player_id}/games`. Setup
+and run instructions are in `frontend/README.md`.
 
 ### Project 6 — Testing & Quality
 

@@ -11,3 +11,7 @@
 
 # Local data artifacts
 data/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
