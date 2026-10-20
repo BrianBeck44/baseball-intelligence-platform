@@ -18,6 +18,7 @@ class PlayerIdentity:
 @dataclass(frozen=True)
 class PlayerGameHistoryRow:
     game_id: int
+    team_id: int
     game_date: date
     season_game_number: int
     plate_appearances: int
@@ -67,6 +68,7 @@ def list_player_game_history(
                 """
                 SELECT
                     game_id,
+                    team_id,
                     game_date,
                     season_game_number,
                     plate_appearances,
@@ -95,6 +97,7 @@ def list_player_game_history(
 def _history_row(row: RowMapping) -> PlayerGameHistoryRow:
     return PlayerGameHistoryRow(
         game_id=int(row["game_id"]),
+        team_id=int(row["team_id"]),
         game_date=row["game_date"],
         season_game_number=int(row["season_game_number"]),
         plate_appearances=int(row["plate_appearances"]),

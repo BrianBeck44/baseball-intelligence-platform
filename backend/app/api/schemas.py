@@ -11,6 +11,7 @@ class PlayerGameRecord(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     game_id: int
+    team_id: int
     game_date: date
     season_game_number: int
     plate_appearances: int

@@ -40,6 +40,7 @@ def get_player_game_history(
         games=[
             PlayerGameRecord(
                 game_id=row.game_id,
+                team_id=row.team_id,
                 game_date=row.game_date,
                 season_game_number=row.season_game_number,
                 plate_appearances=row.plate_appearances,
