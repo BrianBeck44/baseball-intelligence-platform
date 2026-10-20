@@ -175,6 +175,7 @@ def test_player_games_returns_history_for_valid_player_and_season() -> None:
             assert len(payload["games"]) == 1
             game = payload["games"][0]
             assert game["game_id"] == game_id
+            assert game["team_id"] == team_id
             assert game["game_date"] == "2861-04-08"
             assert game["season_game_number"] == 1
             assert game["plate_appearances"] == 4
@@ -282,7 +283,9 @@ def test_limit_is_enforced() -> None:
             games = response.json()["games"]
             assert len(games) == 2
             assert games[0]["game_id"] == first_game_id
+            assert games[0]["team_id"] == team_id
             assert games[0]["game_date"] == "2862-04-08"
+            assert games[1]["team_id"] == team_id
             assert games[1]["game_date"] == "2862-04-09"
     finally:
         engine.dispose()
@@ -356,6 +359,7 @@ def test_null_ops_values_remain_null() -> None:
 
             assert response.status_code == 200
             game = response.json()["games"][0]
+            assert game["team_id"] == team_id
             assert game["plate_appearances"] == 1
             assert game["rolling_14_ops"] is None
             assert game["season_ops"] is None
