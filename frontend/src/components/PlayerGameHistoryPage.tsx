@@ -2,6 +2,7 @@ import { FormEvent, useState } from "react";
 
 import { fetchPlayerGames, PlayerGamesApiError } from "../api/playerGames";
 import type { PlayerGameHistoryResponse } from "../types/playerGames";
+import { PerformanceOverTimeChart } from "./PerformanceOverTimeChart";
 
 function formatOps(value: number | null): string {
   if (value === null) {
@@ -128,6 +129,7 @@ export function PlayerGameHistoryPage() {
               Player {history.player_id} · Season {history.season_id}
             </span>
           </h2>
+          <PerformanceOverTimeChart games={history.games} />
           <table>
             <thead>
               <tr>
