@@ -39,6 +39,12 @@ export function PerformanceOverTimeChart({
   games,
 }: PerformanceOverTimeChartProps) {
   const data = toChartPoints(games);
+  const tickStyle = { fill: "var(--color-muted)", fontSize: 12 };
+  const tooltipStyle = {
+    background: "var(--color-surface)",
+    border: "1px solid var(--color-border)",
+    color: "var(--color-text)",
+  };
 
   return (
     <div className="chart-panel" aria-label="OPS over time">
@@ -48,25 +54,28 @@ export function PerformanceOverTimeChart({
           data={data}
           margin={{ top: 8, right: 16, left: 4, bottom: 8 }}
         >
-          <CartesianGrid stroke="#d8dee3" strokeDasharray="3 3" />
+          <CartesianGrid stroke="var(--color-chart-grid)" strokeDasharray="3 3" />
           <XAxis
             dataKey="pointId"
             tickFormatter={(_value, index) => data[index]?.game_date ?? ""}
             interval="preserveStartEnd"
             minTickGap={28}
-            tick={{ fill: "#3d4f5c", fontSize: 12 }}
+            tick={tickStyle}
           />
           <YAxis
             label={{
               value: "OPS",
               angle: -90,
               position: "insideLeft",
-              fill: "#3d4f5c",
+              fill: "var(--color-muted)",
             }}
-            tick={{ fill: "#3d4f5c", fontSize: 12 }}
+            tick={tickStyle}
             tickFormatter={(value: number) => value.toFixed(3)}
           />
           <Tooltip
+            contentStyle={tooltipStyle}
+            labelStyle={{ color: "var(--color-text)" }}
+            itemStyle={{ color: "var(--color-text)" }}
             labelFormatter={(_label, payload) => {
               const point = payload?.[0]?.payload as ChartPoint | undefined;
               return point?.game_date ?? "";
@@ -76,12 +85,12 @@ export function PerformanceOverTimeChart({
               String(name),
             ]}
           />
-          <Legend />
+          <Legend wrapperStyle={{ color: "var(--color-text)" }} />
           <Line
             type="monotone"
             dataKey="rolling_14_ops"
             name="Rolling 14 OPS"
-            stroke="#123d2a"
+            stroke="var(--color-chart-rolling)"
             strokeWidth={2}
             connectNulls={false}
             dot={{ r: 3 }}
@@ -90,7 +99,7 @@ export function PerformanceOverTimeChart({
             type="monotone"
             dataKey="season_ops"
             name="Season OPS"
-            stroke="#8a5a12"
+            stroke="var(--color-chart-season)"
             strokeWidth={2}
             connectNulls={false}
             dot={{ r: 3 }}

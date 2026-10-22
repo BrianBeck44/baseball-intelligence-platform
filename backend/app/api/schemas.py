@@ -27,3 +27,42 @@ class PlayerGameHistoryResponse(BaseModel):
     player_name: str
     season_id: int
     games: list[PlayerGameRecord]
+
+
+class SeasonRecord(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    season_id: int
+    season_year: int
+
+
+class SeasonListResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    seasons: list[SeasonRecord]
+
+
+class TeamRecord(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    team_id: int
+    name: str
+
+
+class TeamListResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    teams: list[TeamRecord]
+
+
+class PlayerOption(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    player_id: int
+    full_name: str
+
+
+class PlayerListResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    players: list[PlayerOption]
