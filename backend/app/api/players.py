@@ -7,14 +7,29 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from sqlalchemy.engine import Connection
 
-from app.api.schemas import PlayerGameHistoryResponse
+from app.api.schemas import PlayerGameHistoryResponse, PlayerListResponse
 from app.core.db import get_connection
+from app.services.lookups import get_players_for_season
 from app.services.player_games import PlayerNotFoundError, get_player_game_history
 
 router = APIRouter(prefix="/players", tags=["players"])
 
 _DEFAULT_GAME_LIMIT = 50
 _MAX_GAME_LIMIT = 200
+
+
+@router.get("", response_model=PlayerListResponse)
+def read_players(
+    season_id: Annotated[int, Query(ge=1)],
+    connection: Annotated[Connection, Depends(get_connection)],
+    team_id: Annotated[int | None, Query(ge=1)] = None,
+) -> PlayerListResponse:
+    """Return distinct batters for one season, optionally filtered by team."""
+    return get_players_for_season(
+        connection,
+        season_id=season_id,
+        team_id=team_id,
+    )
 
 
 @router.get("/{player_id}/games", response_model=PlayerGameHistoryResponse)

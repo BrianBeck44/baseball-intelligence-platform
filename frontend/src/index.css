@@ -1,12 +1,47 @@
 :root {
+  --color-bg: #f4f1ea;
+  --color-text: #12202b;
+  --color-muted: #3d4f5c;
+  --color-border: #b7c0c7;
+  --color-surface: #ffffff;
+  --color-table-head: #e8efe9;
+  --color-row-border: #d8dee3;
+  --color-button-bg: #123d2a;
+  --color-button-text: #ffffff;
+  --color-error: #8a1f1f;
+  --color-chart-grid: #d8dee3;
+  --color-chart-rolling: #123d2a;
+  --color-chart-season: #8a5a12;
+  --color-toggle-bg: #ffffff;
+  --color-toggle-text: #12202b;
+  color-scheme: light;
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
   line-height: 1.5;
   font-weight: 400;
-  color: #12202b;
-  background: #f4f1ea;
+  color: var(--color-text);
+  background: var(--color-bg);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
+}
+
+:root[data-theme="dark"] {
+  --color-bg: #12181d;
+  --color-text: #e8eef2;
+  --color-muted: #b4c3ce;
+  --color-border: #4a5b66;
+  --color-surface: #1c252c;
+  --color-table-head: #24332c;
+  --color-row-border: #2e3c45;
+  --color-button-bg: #3d8f68;
+  --color-button-text: #ffffff;
+  --color-error: #f0a8a8;
+  --color-chart-grid: #3d4c57;
+  --color-chart-rolling: #7dcea0;
+  --color-chart-season: #e0b567;
+  --color-toggle-bg: #1c252c;
+  --color-toggle-text: #e8eef2;
+  color-scheme: dark;
 }
 
 * {
@@ -15,10 +50,14 @@
 
 body {
   margin: 0;
+  background: var(--color-bg);
+  color: var(--color-text);
 }
 
 #root {
   min-height: 100vh;
+  background: var(--color-bg);
+  color: var(--color-text);
 }
 
 .page {
@@ -27,14 +66,43 @@ body {
   padding: 2rem 1.5rem 4rem;
 }
 
+.page-header {
+  display: flex;
+  flex-wrap: nowrap;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.page-header-copy {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 .page-header h1 {
   margin: 0 0 0.5rem;
   font-size: 2rem;
 }
 
 .page-header p {
-  margin: 0 0 1.5rem;
-  color: #3d4f5c;
+  margin: 0;
+  color: var(--color-muted);
+}
+
+.theme-toggle {
+  flex: 0 0 auto;
+  min-width: 8.5rem;
+  padding: 0.5rem 0.85rem;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-toggle-bg);
+  color: var(--color-toggle-text);
+  font: inherit;
+  font-weight: 600;
+  white-space: nowrap;
+  text-align: center;
+  cursor: pointer;
 }
 
 .history-form {
@@ -45,7 +113,8 @@ body {
   margin-bottom: 1.5rem;
 }
 
-.history-form label {
+.history-form label,
+.searchable-select {
   display: flex;
   flex-direction: column;
   gap: 0.35rem;
@@ -53,28 +122,76 @@ body {
   font-weight: 600;
 }
 
-.history-form input {
-  min-width: 10rem;
-  padding: 0.5rem 0.65rem;
-  border: 1px solid #b7c0c7;
+.searchable-select {
+  position: relative;
+}
+
+.searchable-select-menu {
+  position: absolute;
+  z-index: 2;
+  top: 100%;
+  left: 0;
+  right: 0;
+  max-height: 16rem;
+  overflow: auto;
+  margin: 0.15rem 0 0;
+  padding: 0.25rem 0;
+  list-style: none;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
   border-radius: 4px;
+}
+
+.searchable-select-option {
+  padding: 0.45rem 0.65rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.searchable-select-option.is-active,
+.searchable-select-option[aria-selected="true"] {
+  background: var(--color-table-head);
+}
+
+.searchable-select-empty {
+  padding: 0.45rem 0.65rem;
+  font-weight: 500;
+  color: var(--color-muted);
+}
+
+.history-form input,
+.history-form select {
+  min-width: 12rem;
+  padding: 0.5rem 0.65rem;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-surface);
+  color: var(--color-text);
   font: inherit;
+}
+
+.history-form input:disabled,
+.history-form select:disabled,
+.history-form button:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
 }
 
 .history-form button {
   padding: 0.55rem 1rem;
   border: 0;
   border-radius: 4px;
-  background: #123d2a;
-  color: #fff;
+  background: var(--color-button-bg);
+  color: var(--color-button-text);
   font: inherit;
   font-weight: 600;
   cursor: pointer;
 }
 
-.history-form button:disabled {
-  opacity: 0.7;
-  cursor: wait;
+.field-hint {
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--color-muted);
 }
 
 .status {
@@ -82,7 +199,7 @@ body {
 }
 
 .status.error {
-  color: #8a1f1f;
+  color: var(--color-error);
 }
 
 .results h2 {
@@ -96,15 +213,15 @@ body {
 .results .meta {
   font-size: 0.95rem;
   font-weight: 500;
-  color: #3d4f5c;
+  color: var(--color-muted);
 }
 
 .chart-panel {
   width: 100%;
   margin: 0 0 1.5rem;
   padding: 0.75rem 0.75rem 0.25rem;
-  background: #fff;
-  border: 1px solid #d8dee3;
+  background: var(--color-surface);
+  border: 1px solid var(--color-row-border);
 }
 
 .chart-panel h3 {
@@ -115,18 +232,18 @@ body {
 table {
   width: 100%;
   border-collapse: collapse;
-  background: #fff;
+  background: var(--color-surface);
 }
 
 th,
 td {
   padding: 0.6rem 0.7rem;
-  border-bottom: 1px solid #d8dee3;
+  border-bottom: 1px solid var(--color-row-border);
   text-align: left;
 }
 
 th {
-  background: #e8efe9;
+  background: var(--color-table-head);
   font-size: 0.85rem;
   text-transform: uppercase;
   letter-spacing: 0.03em;

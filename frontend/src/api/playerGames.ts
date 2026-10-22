@@ -1,34 +1,19 @@
 import { getApiBaseUrl } from "./config";
+import { ApiError, fetchJson } from "./http";
 import type { PlayerGameHistoryResponse } from "../types/playerGames";
 
-export class PlayerGamesApiError extends Error {
-  readonly status: number;
-  readonly detail: string;
-
+export class PlayerGamesApiError extends ApiError {
   constructor(status: number, detail: string) {
-    super(detail);
+    super(status, detail);
     this.name = "PlayerGamesApiError";
-    this.status = status;
-    this.detail = detail;
   }
-}
-
-function readErrorDetail(payload: unknown): string | null {
-  if (
-    payload !== null &&
-    typeof payload === "object" &&
-    "detail" in payload &&
-    typeof payload.detail === "string"
-  ) {
-    return payload.detail;
-  }
-  return null;
 }
 
 export async function fetchPlayerGames(
   playerId: number,
   seasonId: number,
   limit = 50,
+  signal?: AbortSignal,
 ): Promise<PlayerGameHistoryResponse> {
   const url = new URL(
     `${getApiBaseUrl()}/players/${playerId}/games`,
@@ -36,18 +21,12 @@ export async function fetchPlayerGames(
   url.searchParams.set("season_id", String(seasonId));
   url.searchParams.set("limit", String(limit));
 
-  const response = await fetch(url);
-
-  if (!response.ok) {
-    let detail = `Request failed with status ${response.status}.`;
-    try {
-      const payload: unknown = await response.json();
-      detail = readErrorDetail(payload) ?? detail;
-    } catch {
-      // Keep the status fallback when the body is not JSON.
+  try {
+    return await fetchJson<PlayerGameHistoryResponse>(url, signal);
+  } catch (error) {
+    if (error instanceof ApiError) {
+      throw new PlayerGamesApiError(error.status, error.detail);
     }
-    throw new PlayerGamesApiError(response.status, detail);
+    throw error;
   }
-
-  return (await response.json()) as PlayerGameHistoryResponse;
 }

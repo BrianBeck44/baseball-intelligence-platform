@@ -6,6 +6,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.players import router as players_router
+from app.api.seasons import router as seasons_router
+from app.api.teams import router as teams_router
 
 _LOCAL_VITE_ORIGINS = (
     "http://localhost:5173",
@@ -28,6 +30,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(seasons_router)
+app.include_router(teams_router)
 app.include_router(players_router)
 
 

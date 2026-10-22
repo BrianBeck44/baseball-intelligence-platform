@@ -1,17 +1,20 @@
 # Baseball Intelligence Frontend
 
 React + TypeScript UI for the Baseball Intelligence Platform. The first
-screen loads a player's game-by-game batting history from the existing
-FastAPI endpoint:
+screen loads a player's game-by-game batting history. Select a season
+year, a team (or Search All Teams), then a player name. The page uses:
 
 ```text
+GET /seasons
+GET /teams?season_id={season_id}
+GET /players?season_id={season_id}&team_id={team_id}
 GET /players/{player_id}/games?season_id={season_id}&limit={limit}
 ```
 
 The table shows game date, season game number, team ID, plate
 appearances, rolling 14-game OPS, season OPS, and OPS difference. Null
-OPS values render as an em dash. Team names are not inferred; the API
-currently returns `team_id` only.
+OPS values render as an em dash. Use the header control to switch
+between light and dark themes; the choice is stored in localStorage.
 
 ## Requirements
 
@@ -65,9 +68,9 @@ The Vite dev server listens on `http://localhost:5173`. The backend
 allows that origin (and `http://127.0.0.1:5173`) for local browser
 requests.
 
-Enter a player ID and season ID, then load history. Those IDs are the
-internal `curated.player.player_id` and `curated.season.season_id`
-values, not MLB IDs or season years.
+Select a season year, team, and player name, then load history. The
+page submits the internal `player_id` and `season_id` values to the
+game-history API.
 
 ## Checks
 
