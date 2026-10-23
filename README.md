@@ -236,10 +236,10 @@ docs/adr/
 | ADR     | Decision                         | Status   |
 | ------- | -------------------------------- | -------- |
 | ADR-001 | React + TypeScript for frontend  | Accepted |
-| ADR-002 | Primary baseball data source     | Pending  |
-| ADR-003 | PostgreSQL database architecture | Pending  |
-| ADR-004 | Data ingestion architecture      | Pending  |
-| ADR-005 | FastAPI application architecture | Pending  |
+| ADR-002 | Primary baseball data source     | Accepted  |
+| ADR-003 | PostgreSQL database architecture | Accepted  |
+| ADR-004 | Data ingestion architecture      | Accepted  |
+| ADR-005 | FastAPI application architecture | Accepted  |
 
 ## Project Philosophy
 
