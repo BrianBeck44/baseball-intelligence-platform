@@ -57,7 +57,9 @@ export function PerformanceOverTimeChart({
           <CartesianGrid stroke="var(--color-chart-grid)" strokeDasharray="3 3" />
           <XAxis
             dataKey="pointId"
-            tickFormatter={(_value, index) => data[index]?.game_date ?? ""}
+            tickFormatter={(value) =>
+              data.find((point) => point.pointId === value)?.game_date ?? ""
+            }
             interval="preserveStartEnd"
             minTickGap={28}
             tick={tickStyle}

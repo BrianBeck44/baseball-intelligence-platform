@@ -200,7 +200,11 @@ export function PlayerGameHistoryPage() {
 
     setIsLoading(true);
     try {
-      const result = await fetchPlayerGames(Number(playerId), Number(seasonId));
+      const result = await fetchPlayerGames(
+        Number(playerId),
+        Number(seasonId),
+        200,
+      );
       setHistory(result);
     } catch (requestError) {
       setHistory(null);
