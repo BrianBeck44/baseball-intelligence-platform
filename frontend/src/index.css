@@ -60,6 +60,32 @@ body {
   color: var(--color-text);
 }
 
+.app-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 1.25rem 1.5rem 0;
+}
+
+.app-nav button {
+  padding: 0.45rem 0.85rem;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-toggle-bg);
+  color: var(--color-toggle-text);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.app-nav button.is-active {
+  background: var(--color-button-bg);
+  color: var(--color-button-text);
+  border-color: var(--color-button-bg);
+}
+
 .page {
   max-width: 960px;
   margin: 0 auto;
@@ -229,6 +255,27 @@ body {
   font-size: 1rem;
 }
 
+.comparison-charts {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1rem;
+  margin: 0 0 1.5rem;
+}
+
+@media (min-width: 800px) {
+  .comparison-charts {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+.chart-unavailable {
+  min-height: 11.5rem;
+  display: flex;
+  align-items: center;
+  margin: 0;
+  color: var(--color-muted);
+}
+
 table {
   width: 100%;
   border-collapse: collapse;
@@ -247,4 +294,14 @@ th {
   font-size: 0.85rem;
   text-transform: uppercase;
   letter-spacing: 0.03em;
+}
+
+.comparison-table-wrap {
+  overflow-x: auto;
+}
+
+.comparison-table th:not(:first-child),
+.comparison-table td:not(:first-child) {
+  text-align: right;
+  white-space: nowrap;
 }
