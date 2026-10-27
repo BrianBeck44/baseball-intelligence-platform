@@ -66,3 +66,31 @@ class PlayerListResponse(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     players: list[PlayerOption]
+
+
+class PlayerSeasonBattingResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    player_id: int
+    full_name: str
+    season_id: int
+    season_year: int | None
+    games: int | None
+    plate_appearances: int | None
+    at_bats: int | None
+    hits: int | None
+    singles: int | None
+    doubles: int | None
+    triples: int | None
+    home_runs: int | None
+    walks: int | None
+    hit_by_pitch: int | None
+    strikeouts: int | None
+    sacrifice_flies: int | None
+    sacrifice_bunts: int | None
+    batting_average: float | None
+    on_base_percentage: float | None
+    slugging_percentage: float | None
+    ops: float | None
+    strikeout_rate: float | None
+    walk_rate: float | None
