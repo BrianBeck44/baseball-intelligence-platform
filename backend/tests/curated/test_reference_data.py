@@ -64,15 +64,20 @@ def test_pitch_types_include_ep_fa_kn_and_po():
 
     assert names_by_code["EP"] == "Eephus"
     assert names_by_code["FA"] == "Other"
+    assert names_by_code["FO"] == "Forkball"
     assert names_by_code["KN"] == "Knuckleball"
     assert names_by_code["PO"] == "Pitchout"
+    assert names_by_code["SC"] == "Screwball"
+    assert names_by_code["UN"] == "Unknown"
 
 
 def test_pitch_outcome_types_include_bunt_foul_tip_and_pitchout():
     names_by_code = {value.code: value.name for value in PITCH_OUTCOME_TYPES}
 
+    assert names_by_code["automatic_strike"] == "Automatic Strike"
     assert names_by_code["bunt_foul_tip"] == "Bunt Foul Tip"
     assert names_by_code["pitchout"] == "Pitchout"
+    assert names_by_code["swinging_pitchout"] == "Swinging Pitchout"
 
 
 def test_load_reference_data_populates_all_lookup_tables():
@@ -103,7 +108,7 @@ def test_load_reference_data_populates_all_lookup_tables():
                     """
                     SELECT code, name
                     FROM curated.pitch_type
-                    WHERE code IN ('EP', 'FA', 'KN', 'PO')
+                    WHERE code IN ('EP', 'FA', 'FO', 'KN', 'PO', 'SC', 'UN')
                     ORDER BY code
                     """
                 )
@@ -113,8 +118,11 @@ def test_load_reference_data_populates_all_lookup_tables():
             ] == [
                 ("EP", "Eephus"),
                 ("FA", "Other"),
+                ("FO", "Forkball"),
                 ("KN", "Knuckleball"),
                 ("PO", "Pitchout"),
+                ("SC", "Screwball"),
+                ("UN", "Unknown"),
             ]
 
             loaded_pitch_outcomes = connection.execute(
@@ -122,7 +130,12 @@ def test_load_reference_data_populates_all_lookup_tables():
                     """
                     SELECT code, name
                     FROM curated.pitch_outcome_type
-                    WHERE code IN ('bunt_foul_tip', 'pitchout')
+                    WHERE code IN (
+                        'automatic_strike',
+                        'bunt_foul_tip',
+                        'pitchout',
+                        'swinging_pitchout'
+                    )
                     ORDER BY code
                     """
                 )
@@ -130,8 +143,10 @@ def test_load_reference_data_populates_all_lookup_tables():
             assert [
                 (row["code"], row["name"]) for row in loaded_pitch_outcomes
             ] == [
+                ("automatic_strike", "Automatic Strike"),
                 ("bunt_foul_tip", "Bunt Foul Tip"),
                 ("pitchout", "Pitchout"),
+                ("swinging_pitchout", "Swinging Pitchout"),
             ]
     finally:
         engine.dispose()

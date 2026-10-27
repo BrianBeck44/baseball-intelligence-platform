@@ -23,18 +23,22 @@ PITCH_TYPES = (
     ReferenceValue("FA", "Other"),
     ReferenceValue("FC", "Cutter"),
     ReferenceValue("FF", "4-Seam Fastball"),
+    ReferenceValue("FO", "Forkball"),
     ReferenceValue("FS", "Splitter"),
     ReferenceValue("KC", "Knuckle Curve"),
     ReferenceValue("KN", "Knuckleball"),
     ReferenceValue("PO", "Pitchout"),
+    ReferenceValue("SC", "Screwball"),
     ReferenceValue("SI", "Sinker"),
     ReferenceValue("SL", "Slider"),
     ReferenceValue("ST", "Sweeper"),
     ReferenceValue("SV", "Slurve"),
+    ReferenceValue("UN", "Unknown"),
 )
 
 PITCH_OUTCOME_TYPES = (
     ReferenceValue("automatic_ball", "Automatic Ball"),
+    ReferenceValue("automatic_strike", "Automatic Strike"),
     ReferenceValue("ball", "Ball"),
     ReferenceValue("blocked_ball", "Blocked Ball"),
     ReferenceValue("bunt_foul_tip", "Bunt Foul Tip"),
@@ -46,6 +50,7 @@ PITCH_OUTCOME_TYPES = (
     ReferenceValue("hit_into_play", "Hit Into Play"),
     ReferenceValue("missed_bunt", "Missed Bunt"),
     ReferenceValue("pitchout", "Pitchout"),
+    ReferenceValue("swinging_pitchout", "Swinging Pitchout"),
     ReferenceValue("swinging_strike", "Swinging Strike"),
     ReferenceValue("swinging_strike_blocked", "Swinging Strike Blocked"),
 )

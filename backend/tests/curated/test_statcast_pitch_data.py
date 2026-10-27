@@ -4,11 +4,16 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
-from sqlalchemy import text
+import pytest
+from sqlalchemy import Select, text
 from sqlalchemy.engine import Connection, Engine
 
 from tests.db import create_test_engine
-from app.curated.statcast_pitch_data import StatcastPitch, get_statcast_pitches
+from app.curated.statcast_pitch_data import (
+    StatcastPitch,
+    get_statcast_pitches,
+    iter_statcast_pitch_chunks,
+)
 from app.ingestion.batch import create_ingestion_batch
 
 
@@ -62,6 +67,7 @@ _OPTIONAL_COLUMNS = frozenset(
         "swing_path_tilt",
         "intercept_ball_minus_batter_pos_x_inches",
         "intercept_ball_minus_batter_pos_y_inches",
+        "game_year",
     }
 )
 
@@ -525,5 +531,124 @@ def test_extraction_does_not_manage_transactions():
 
             connection.commit.assert_not_called()
             connection.rollback.assert_not_called()
+    finally:
+        engine.dispose()
+
+
+def test_iter_statcast_pitch_chunks_fetches_bounded_pages():
+    engine = _create_engine()
+
+    try:
+        with _isolated_connection(engine) as connection:
+            _clear_statcast_pitches(connection)
+            _insert_pitch(connection, game_pk=900003020, at_bat_number=1, pitch_number=1)
+            _insert_pitch(connection, game_pk=900003020, at_bat_number=1, pitch_number=2)
+            _insert_pitch(connection, game_pk=900003021, at_bat_number=1, pitch_number=1)
+
+            chunks = list(
+                iter_statcast_pitch_chunks(connection, chunk_size=2)
+            )
+
+            assert [len(chunk) for chunk in chunks] == [2, 1]
+            assert [
+                (pitch.mlb_game_pk, pitch.at_bat_number, pitch.pitch_number)
+                for chunk in chunks
+                for pitch in chunk
+            ] == [
+                (900003020, 1, 1),
+                (900003020, 1, 2),
+                (900003021, 1, 1),
+            ]
+    finally:
+        engine.dispose()
+
+
+def test_iter_statcast_pitch_chunks_includes_every_game_year():
+    engine = _create_engine()
+
+    try:
+        with _isolated_connection(engine) as connection:
+            _clear_statcast_pitches(connection)
+            _insert_pitch(
+                connection,
+                game_pk=900003022,
+                game_year=2022,
+            )
+            _insert_pitch(
+                connection,
+                game_pk=900003023,
+                game_year=2026,
+            )
+
+            chunks = list(
+                iter_statcast_pitch_chunks(connection, chunk_size=1)
+            )
+
+            assert [len(chunk) for chunk in chunks] == [1, 1]
+            assert {
+                (pitch.mlb_game_pk, pitch.at_bat_number, pitch.pitch_number)
+                for chunk in chunks
+                for pitch in chunk
+            } == {
+                (900003022, 1, 1),
+                (900003023, 1, 1),
+            }
+    finally:
+        engine.dispose()
+
+
+def test_iter_statcast_pitch_chunks_limits_each_database_fetch():
+    engine = _create_engine()
+
+    try:
+        with _isolated_connection(engine) as connection:
+            _clear_statcast_pitches(connection)
+            for pitch_number in range(1, 6):
+                _insert_pitch(
+                    connection,
+                    game_pk=900003024,
+                    at_bat_number=1,
+                    pitch_number=pitch_number,
+                )
+
+            fetch_sizes: list[int] = []
+            original_execute = connection.execute
+
+            def spy_execute(statement, *args, **kwargs):
+                result = original_execute(statement, *args, **kwargs)
+                if isinstance(statement, Select):
+                    compiled = str(statement.compile())
+                    if "statcast_pitch" in compiled:
+                        assert "LIMIT" in compiled.upper()
+                        assert "game_year" not in compiled
+                        original_all = result.all
+
+                        def spy_all():
+                            rows = original_all()
+                            fetch_sizes.append(len(rows))
+                            return rows
+
+                        result.all = spy_all
+                return result
+
+            connection.execute = spy_execute  # type: ignore[method-assign]
+            chunks = list(
+                iter_statcast_pitch_chunks(connection, chunk_size=2)
+            )
+
+            assert [len(chunk) for chunk in chunks] == [2, 2, 1]
+            assert fetch_sizes == [2, 2, 1]
+            assert max(fetch_sizes) == 2
+    finally:
+        engine.dispose()
+
+
+def test_iter_statcast_pitch_chunks_rejects_non_positive_chunk_size():
+    engine = _create_engine()
+
+    try:
+        with _isolated_connection(engine) as connection:
+            with pytest.raises(ValueError, match="chunk_size must be at least 1"):
+                list(iter_statcast_pitch_chunks(connection, chunk_size=0))
     finally:
         engine.dispose()

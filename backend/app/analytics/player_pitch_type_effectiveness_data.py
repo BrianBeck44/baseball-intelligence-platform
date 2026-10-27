@@ -179,6 +179,7 @@ _FOUL_OUTCOMES = frozenset(
 _RECOGNIZED_PITCH_OUTCOMES = frozenset(
     {
         "automatic_ball",
+        "automatic_strike",
         "ball",
         "blocked_ball",
         "bunt_foul_tip",
@@ -190,6 +191,7 @@ _RECOGNIZED_PITCH_OUTCOMES = frozenset(
         "hit_into_play",
         "missed_bunt",
         "pitchout",
+        "swinging_pitchout",
         "swinging_strike",
         "swinging_strike_blocked",
     }

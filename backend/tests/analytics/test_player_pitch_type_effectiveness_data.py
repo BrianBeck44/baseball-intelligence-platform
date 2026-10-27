@@ -411,11 +411,13 @@ def test_swing_outcomes(
     ("pitch_outcome_code", "called_strikes"),
     [
         ("automatic_ball", 0),
+        ("automatic_strike", 0),
         ("ball", 0),
         ("blocked_ball", 0),
         ("called_strike", 1),
         ("hit_by_pitch", 0),
         ("pitchout", 0),
+        ("swinging_pitchout", 0),
     ],
 )
 def test_non_swing_pitch_outcomes(pitch_outcome_code: str, called_strikes: int):
@@ -428,6 +430,28 @@ def test_non_swing_pitch_outcomes(pitch_outcome_code: str, called_strikes: int):
 
     assert result == [_row(called_strikes=called_strikes)]
     assert result[0].swings == 0
+
+
+def test_swinging_pitchout_is_recognized_without_pitch_increments():
+    connection = MagicMock()
+
+    result = transform_player_pitch_type_effectiveness(
+        connection,
+        [_pitch(pitch_outcome_code="swinging_pitchout", is_terminal_pitch=True)],
+    )
+
+    assert result == [
+        _row(
+            balls_in_play=0,
+            swings=0,
+            whiffs=0,
+            called_strikes=0,
+            fouls=0,
+        )
+    ]
+    assert result[0].swing_rate == 0.0
+    assert result[0].whiff_rate is None
+    assert result[0].contact_rate is None
 
 
 def test_rate_calculations_are_unambiguous():
