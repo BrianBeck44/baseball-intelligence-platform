@@ -11,6 +11,8 @@ from sqlalchemy.engine import Connection
 
 from app.curated.statcast_game_team_data import StatcastGameTeam
 
+_GAME_TEAM_INSERT_BATCH_SIZE = 500
+
 
 @dataclass(frozen=True)
 class GameTeamLoadResult:
@@ -52,12 +54,14 @@ def load_game_teams(
     ]
 
     table = _curated_table(connection, "game_team")
-    statement = insert(table).values(rows)
-    statement = statement.on_conflict_do_update(
-        index_elements=[table.c.game_id, table.c.team_id],
-        set_={"home_away": statement.excluded.home_away},
-    )
-    connection.execute(statement)
+    for start in range(0, len(rows), _GAME_TEAM_INSERT_BATCH_SIZE):
+        batch = rows[start : start + _GAME_TEAM_INSERT_BATCH_SIZE]
+        statement = insert(table).values(batch)
+        statement = statement.on_conflict_do_update(
+            index_elements=[table.c.game_id, table.c.team_id],
+            set_={"home_away": statement.excluded.home_away},
+        )
+        connection.execute(statement)
     return GameTeamLoadResult(
         game_teams_supplied=game_teams_supplied,
         game_teams_loaded=game_teams_supplied,

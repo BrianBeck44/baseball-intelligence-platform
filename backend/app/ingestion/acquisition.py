@@ -36,7 +36,7 @@ def download_statcast_csv(
     )
 
     try:
-        with urlopen(request) as response:
+        with urlopen(request, timeout=60) as response:
             status_code = getattr(response, "status", None)
             payload = response.read()
     except HTTPError as exc:

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
+from weakref import WeakKeyDictionary
 
 from sqlalchemy import MetaData, Table, select, tuple_
 from sqlalchemy.dialects.postgresql import insert
@@ -11,8 +12,23 @@ from sqlalchemy.engine import Connection
 
 from app.curated.statcast_pitch_data import StatcastPitch
 
-_PITCH_INSERT_BATCH_SIZE = 500
+_PITCH_INSERT_BATCH_SIZE = 1000
 _PLATE_APPEARANCE_LOOKUP_BATCH_SIZE = 500
+
+
+@dataclass
+class _PitchConnectionCache:
+    metadata: MetaData = field(default_factory=MetaData)
+    tables: dict[str, Table] = field(default_factory=dict)
+    game_ids_by_mlb_game_pk: dict[int, int] | None = None
+    pitch_type_ids_by_code: dict[str, int] | None = None
+    pitch_outcome_type_ids_by_code: dict[str, int] | None = None
+
+
+_PITCH_CONNECTION_CACHES: WeakKeyDictionary[
+    Connection,
+    _PitchConnectionCache,
+] = WeakKeyDictionary()
 
 
 @dataclass(frozen=True)
@@ -273,14 +289,26 @@ def load_pitches(
     return inserted
 
 
+def _cache_for(connection: Connection) -> _PitchConnectionCache:
+    cache = _PITCH_CONNECTION_CACHES.get(connection)
+    if cache is None:
+        cache = _PitchConnectionCache()
+        _PITCH_CONNECTION_CACHES[connection] = cache
+    return cache
+
+
 def _curated_table(connection: Connection, table_name: str) -> Table:
-    metadata = MetaData()
-    return Table(
-        table_name,
-        metadata,
-        schema="curated",
-        autoload_with=connection,
-    )
+    cache = _cache_for(connection)
+    table = cache.tables.get(table_name)
+    if table is None:
+        table = Table(
+            table_name,
+            cache.metadata,
+            schema="curated",
+            autoload_with=connection,
+        )
+        cache.tables[table_name] = table
+    return table
 
 
 def _game_ids_by_mlb_game_pk(
@@ -291,13 +319,20 @@ def _game_ids_by_mlb_game_pk(
     if not game_pks:
         return {}
 
-    game = _curated_table(connection, "game")
-    rows = connection.execute(
-        select(game.c.mlb_game_pk, game.c.game_id).where(
-            game.c.mlb_game_pk.in_(game_pks)
-        )
-    ).all()
-    return {int(mlb_game_pk): int(game_id) for mlb_game_pk, game_id in rows}
+    cache = _cache_for(connection)
+    if cache.game_ids_by_mlb_game_pk is None:
+        game = _curated_table(connection, "game")
+        rows = connection.execute(
+            select(game.c.mlb_game_pk, game.c.game_id)
+        ).all()
+        cache.game_ids_by_mlb_game_pk = {
+            int(mlb_game_pk): int(game_id) for mlb_game_pk, game_id in rows
+        }
+    return {
+        mlb_game_pk: cache.game_ids_by_mlb_game_pk[mlb_game_pk]
+        for mlb_game_pk in game_pks
+        if mlb_game_pk in cache.game_ids_by_mlb_game_pk
+    }
 
 
 def _plate_appearance_ids_by_game_at_bat(
@@ -343,13 +378,20 @@ def _pitch_type_ids_by_code(
     if not codes:
         return {}
 
-    pitch_type = _curated_table(connection, "pitch_type")
-    rows = connection.execute(
-        select(pitch_type.c.code, pitch_type.c.id).where(
-            pitch_type.c.code.in_(codes)
-        )
-    ).all()
-    return {str(code): int(type_id) for code, type_id in rows}
+    cache = _cache_for(connection)
+    if cache.pitch_type_ids_by_code is None:
+        pitch_type = _curated_table(connection, "pitch_type")
+        rows = connection.execute(
+            select(pitch_type.c.code, pitch_type.c.id)
+        ).all()
+        cache.pitch_type_ids_by_code = {
+            str(code): int(type_id) for code, type_id in rows
+        }
+    return {
+        code: cache.pitch_type_ids_by_code[code]
+        for code in codes
+        if code in cache.pitch_type_ids_by_code
+    }
 
 
 def _pitch_outcome_type_ids_by_code(
@@ -360,10 +402,17 @@ def _pitch_outcome_type_ids_by_code(
     if not codes:
         return {}
 
-    pitch_outcome_type = _curated_table(connection, "pitch_outcome_type")
-    rows = connection.execute(
-        select(pitch_outcome_type.c.code, pitch_outcome_type.c.id).where(
-            pitch_outcome_type.c.code.in_(codes)
-        )
-    ).all()
-    return {str(code): int(type_id) for code, type_id in rows}
+    cache = _cache_for(connection)
+    if cache.pitch_outcome_type_ids_by_code is None:
+        pitch_outcome_type = _curated_table(connection, "pitch_outcome_type")
+        rows = connection.execute(
+            select(pitch_outcome_type.c.code, pitch_outcome_type.c.id)
+        ).all()
+        cache.pitch_outcome_type_ids_by_code = {
+            str(code): int(type_id) for code, type_id in rows
+        }
+    return {
+        code: cache.pitch_outcome_type_ids_by_code[code]
+        for code in codes
+        if code in cache.pitch_outcome_type_ids_by_code
+    }

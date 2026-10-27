@@ -1,12 +1,13 @@
 """Tests for Statcast pitch transformation into curated records."""
 
+from collections import Counter
 from contextlib import contextmanager
 from dataclasses import fields
 from datetime import date
 from unittest.mock import MagicMock, patch
 
 import pytest
-from sqlalchemy import Column, Integer, MetaData, Table, text
+from sqlalchemy import Column, Integer, MetaData, Select, Table, text
 from sqlalchemy.engine import Connection, Engine
 
 from tests.db import create_test_engine
@@ -14,6 +15,7 @@ from app.curated.pitch_data import (
     CuratedPitch,
     _PITCH_INSERT_BATCH_SIZE,
     _PLATE_APPEARANCE_LOOKUP_BATCH_SIZE,
+    _curated_table,
     _plate_appearance_ids_by_game_at_bat,
     load_pitches,
     transform_pitches,
@@ -487,6 +489,72 @@ def test_resolves_pitch_type_id():
         engine.dispose()
 
 
+def test_resolves_swinging_pitchout_pitch_outcome_type_id():
+    engine = _create_engine()
+    mlb_game_pk = 900004083
+
+    try:
+        with _isolated_connection(engine) as connection:
+            ids = _seed_required_lookups(
+                connection,
+                season_year=2142,
+                game_type_code="ZVE",
+                mlb_game_pk=mlb_game_pk,
+                pitch_type_code="ZVE_FF",
+                pitch_outcome_code="swinging_pitchout",
+                batter_team_code="ZVE",
+                pitcher_team_code="ZVF",
+            )
+
+            result = transform_pitches(
+                connection,
+                [_statcast_pitch(
+                    mlb_game_pk=mlb_game_pk,
+                    pitch_type_code="ZVE_FF",
+                    pitch_outcome_code="swinging_pitchout",
+                )],
+            )
+
+            assert len(result) == 1
+            assert result[0].pitch_outcome_type_id == ids["pitch_outcome_type_id"]
+            assert result[0].pitch_outcome_type_id is not None
+    finally:
+        engine.dispose()
+
+
+def test_resolves_automatic_strike_pitch_outcome_type_id():
+    engine = _create_engine()
+    mlb_game_pk = 900004082
+
+    try:
+        with _isolated_connection(engine) as connection:
+            ids = _seed_required_lookups(
+                connection,
+                season_year=2141,
+                game_type_code="ZVC",
+                mlb_game_pk=mlb_game_pk,
+                pitch_type_code="ZVC_FF",
+                pitch_outcome_code="automatic_strike",
+                batter_team_code="ZVC",
+                pitcher_team_code="ZVD",
+            )
+
+            result = transform_pitches(
+                connection,
+                [_statcast_pitch(
+                    mlb_game_pk=mlb_game_pk,
+                    pitch_type_code="ZVC_FF",
+                    pitch_outcome_code="automatic_strike",
+                )],
+            )
+
+            assert len(result) == 1
+            assert result[0].pitch_outcome_type_id == ids["pitch_outcome_type_id"]
+            assert result[0].pitch_outcome_type_id is not None
+    finally:
+        engine.dispose()
+
+
 def test_resolves_pitch_outcome_type_id():
     engine = _create_engine()
     mlb_game_pk = 900004004
@@ -651,6 +719,60 @@ def test_unresolved_plate_appearance_raises_value_error():
                         pitch_outcome_code="zuh_hit_by_pitch",
                     )],
                 )
+    finally:
+        engine.dispose()
+
+
+def test_resolves_fo_sc_and_un_pitch_type_ids():
+    engine = _create_engine()
+    mlb_game_pk = 900004080
+
+    try:
+        with _isolated_connection(engine) as connection:
+            ids = _seed_required_lookups(
+                connection,
+                season_year=2140,
+                game_type_code="ZVA",
+                mlb_game_pk=mlb_game_pk,
+                pitch_type_code="ZVA_FF",
+                pitch_outcome_code="zva_called_strike",
+                batter_team_code="ZVA",
+                pitcher_team_code="ZVB",
+            )
+            fo_id = _insert_pitch_type(connection, "FO", "Forkball")
+            sc_id = _insert_pitch_type(connection, "SC", "Screwball")
+            un_id = _insert_pitch_type(connection, "UN", "Unknown")
+            fa_id = _insert_pitch_type(connection, "FA", "Other")
+
+            result = transform_pitches(
+                connection,
+                [
+                    _statcast_pitch(
+                        mlb_game_pk=mlb_game_pk,
+                        pitch_number=1,
+                        pitch_type_code="FO",
+                        pitch_outcome_code="zva_called_strike",
+                    ),
+                    _statcast_pitch(
+                        mlb_game_pk=mlb_game_pk,
+                        pitch_number=2,
+                        pitch_type_code="SC",
+                        pitch_outcome_code="zva_called_strike",
+                    ),
+                    _statcast_pitch(
+                        mlb_game_pk=mlb_game_pk,
+                        pitch_number=3,
+                        pitch_type_code="UN",
+                        pitch_outcome_code="zva_called_strike",
+                    ),
+                ],
+            )
+
+            assert [row.pitch_type_id for row in result] == [fo_id, sc_id, un_id]
+            assert result[2].pitch_type_id == un_id
+            assert result[2].pitch_type_id != fa_id
+            assert result[2].pitch_type_id is not None
+            assert result[2].pitch_type_id != ids["pitch_type_id"]
     finally:
         engine.dispose()
 
@@ -937,6 +1059,130 @@ def test_load_pitches_inserts_more_than_one_batch():
 
             assert result == pitch_count
             assert stored == pitch_count
+    finally:
+        engine.dispose()
+
+
+def test_pitch_insert_batch_stays_under_postgres_bind_limit():
+    assert _PITCH_INSERT_BATCH_SIZE >= 1000
+    assert _PITCH_INSERT_BATCH_SIZE * len(fields(CuratedPitch)) < 65535
+
+
+def test_curated_tables_are_cached_on_the_same_connection():
+    engine = _create_engine()
+
+    try:
+        with _isolated_connection(engine) as connection:
+            first = _curated_table(connection, "pitch_type")
+            second = _curated_table(connection, "pitch_type")
+            other = _curated_table(connection, "pitch_outcome_type")
+
+            assert first is second
+            assert other is not first
+    finally:
+        engine.dispose()
+
+
+def test_repeated_transforms_reuse_cached_lookup_maps():
+    engine = _create_engine()
+
+    try:
+        with _isolated_connection(engine) as connection:
+            _seed_required_lookups(
+                connection,
+                season_year=2193,
+                game_type_code="ZXA",
+                mlb_game_pk=900004201,
+                pitch_type_code="ZXA_FF",
+                pitch_outcome_code="zxa_called_strike",
+                batter_team_code="ZXA",
+                pitcher_team_code="ZXB",
+            )
+
+            selected_tables: list[str] = []
+            original_execute = connection.execute
+
+            def spy_execute(statement, *args, **kwargs):
+                if isinstance(statement, Select):
+                    names = [
+                        from_clause.name
+                        for from_clause in statement.get_final_froms()
+                        if getattr(from_clause, "name", None)
+                    ]
+                    if len(names) == 1:
+                        selected_tables.append(names[0])
+                return original_execute(statement, *args, **kwargs)
+
+            connection.execute = spy_execute  # type: ignore[method-assign]
+            transform_pitches(
+                connection,
+                [_statcast_pitch(
+                    mlb_game_pk=900004201,
+                    pitch_number=1,
+                    pitch_type_code="ZXA_FF",
+                    pitch_outcome_code="zxa_called_strike",
+                )],
+            )
+            transform_pitches(
+                connection,
+                [_statcast_pitch(
+                    mlb_game_pk=900004201,
+                    pitch_number=2,
+                    pitch_type_code="ZXA_FF",
+                    pitch_outcome_code="zxa_called_strike",
+                )],
+            )
+
+            counts = Counter(selected_tables)
+            assert counts["game"] == 1
+            assert counts["pitch_type"] == 1
+            assert counts["pitch_outcome_type"] == 1
+            assert counts["plate_appearance"] == 2
+    finally:
+        engine.dispose()
+
+
+def test_unknown_pitch_type_still_raises_after_lookup_cache_is_warm():
+    engine = _create_engine()
+    mlb_game_pk = 900004203
+    missing_code = "ZZZ_CACHED_MISSING_PITCH_TYPE"
+
+    try:
+        with _isolated_connection(engine) as connection:
+            _seed_required_lookups(
+                connection,
+                season_year=2195,
+                game_type_code="ZXE",
+                mlb_game_pk=mlb_game_pk,
+                pitch_type_code="ZXE_FF",
+                pitch_outcome_code="zxe_called_strike",
+                batter_team_code="ZXE",
+                pitcher_team_code="ZXF",
+            )
+            transform_pitches(
+                connection,
+                [_statcast_pitch(
+                    mlb_game_pk=mlb_game_pk,
+                    pitch_type_code="ZXE_FF",
+                    pitch_outcome_code="zxe_called_strike",
+                )],
+            )
+
+            with pytest.raises(
+                ValueError,
+                match=(
+                    rf"No curated pitch type found for pitch type code "
+                    rf"{missing_code}"
+                ),
+            ):
+                transform_pitches(
+                    connection,
+                    [_statcast_pitch(
+                        mlb_game_pk=mlb_game_pk,
+                        pitch_type_code=missing_code,
+                        pitch_outcome_code="zxe_called_strike",
+                    )],
+                )
     finally:
         engine.dispose()
 

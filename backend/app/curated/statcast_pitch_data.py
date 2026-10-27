@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
+from typing import Any
 
-from sqlalchemy import MetaData, Table, select
+from sqlalchemy import MetaData, Table, select, tuple_
 from sqlalchemy.engine import Connection
+from sqlalchemy.sql import Select
+
+PITCH_EXTRACT_CHUNK_SIZE = 10000
+PitchKey = tuple[int, int, int]
 
 
 @dataclass(frozen=True)
@@ -63,21 +69,72 @@ class StatcastPitch:
     intercept_ball_minus_batter_pos_y_inches: float | None
 
 
+def iter_statcast_pitch_chunks(
+    connection: Connection,
+    *,
+    chunk_size: int = PITCH_EXTRACT_CHUNK_SIZE,
+) -> Iterator[list[StatcastPitch]]:
+    """Yield bounded chunks of Statcast pitches in natural-key order.
+
+    Uses keyset pagination on ``(game_pk, at_bat_number, pitch_number)``
+    so each query is a complete ``LIMIT`` fetch. Lookups and inserts on
+    the same connection cannot invalidate an open streaming cursor
+    because no cursor is held between chunks. There is no season or
+    year filter. The caller owns the transaction.
+    """
+    if chunk_size < 1:
+        raise ValueError("chunk_size must be at least 1")
+
+    statcast_pitch = _statcast_pitch_table(connection)
+    after: PitchKey | None = None
+    while True:
+        rows = connection.execute(
+            _statcast_pitch_chunk_statement(
+                statcast_pitch,
+                after=after,
+                chunk_size=chunk_size,
+            )
+        ).all()
+        if not rows:
+            return
+        chunk = [_row_to_statcast_pitch(row) for row in rows]
+        yield chunk
+        if len(chunk) < chunk_size:
+            return
+        last = chunk[-1]
+        after = (last.mlb_game_pk, last.at_bat_number, last.pitch_number)
+
+
 def get_statcast_pitches(connection: Connection) -> list[StatcastPitch]:
     """Return one StatcastPitch per raw.statcast_pitch row.
 
+    Small-result convenience over ``iter_statcast_pitch_chunks``. Large
+    loads should iterate chunks instead of calling this function.
     Source values are preserved. The caller owns the transaction.
     """
+    pitches: list[StatcastPitch] = []
+    for chunk in iter_statcast_pitch_chunks(connection):
+        pitches.extend(chunk)
+    return pitches
+
+
+def _statcast_pitch_table(connection: Connection) -> Table:
     metadata = MetaData()
-    statcast_pitch = Table(
+    return Table(
         "statcast_pitch",
         metadata,
         schema="raw",
         autoload_with=connection,
     )
 
-    rows = connection.execute(
-        select(
+
+def _statcast_pitch_chunk_statement(
+    statcast_pitch: Table,
+    *,
+    after: PitchKey | None,
+    chunk_size: int,
+) -> Select:
+    statement = select(
             statcast_pitch.c.game_pk,
             statcast_pitch.c.at_bat_number,
             statcast_pitch.c.pitch_number,
@@ -133,11 +190,21 @@ def get_statcast_pitches(connection: Connection) -> list[StatcastPitch]:
             statcast_pitch.c.game_pk,
             statcast_pitch.c.at_bat_number,
             statcast_pitch.c.pitch_number,
+        ).limit(chunk_size)
+    if after is not None:
+        statement = statement.where(
+            tuple_(
+                statcast_pitch.c.game_pk,
+                statcast_pitch.c.at_bat_number,
+                statcast_pitch.c.pitch_number,
+            )
+            > after
         )
-    ).all()
+    return statement
 
-    return [
-        StatcastPitch(
+
+def _row_to_statcast_pitch(row: Any) -> StatcastPitch:
+    return StatcastPitch(
             mlb_game_pk=int(row.game_pk),
             at_bat_number=int(row.at_bat_number),
             pitch_number=int(row.pitch_number),
@@ -198,8 +265,6 @@ def get_statcast_pitches(connection: Connection) -> list[StatcastPitch]:
                 row.intercept_ball_minus_batter_pos_y_inches
             ),
         )
-        for row in rows
-    ]
 
 
 def _optional_int(value: object) -> int | None:
