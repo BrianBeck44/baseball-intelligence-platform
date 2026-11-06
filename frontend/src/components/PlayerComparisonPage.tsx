@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 
 import { fetchPlayers, fetchSeasons } from "../api/lookups";
 import { ApiError, isAbortError } from "../api/http";
@@ -6,9 +6,17 @@ import {
   fetchPlayerSeasonBatting,
   PlayerSeasonBattingApiError,
 } from "../api/playerSeasonBatting";
+import {
+  fetchPlayerSeasonCaOps,
+  PlayerSeasonCaOpsApiError,
+} from "../api/playerSeasonCaOps";
 import type { PlayerOption, SeasonOption } from "../types/lookups";
 import type { PlayerSeasonBatting } from "../types/playerSeasonBatting";
-import { PlayerComparisonCharts } from "./PlayerComparisonCharts";
+import type { PlayerSeasonCaOps } from "../types/playerSeasonCaOps";
+import {
+  PlayerCaOpsComparisonChart,
+  PlayerComparisonCharts,
+} from "./PlayerComparisonCharts";
 import { SearchableSelect } from "./SearchableSelect";
 import { ThemeToggle } from "./ThemeToggle";
 
@@ -36,6 +44,22 @@ const COMPARISON_STATS: {
   { key: "strikeout_rate", label: "K%", format: "percent" },
   { key: "walk_rate", label: "BB%", format: "percent" },
 ];
+
+const CA_OPS_STATS: {
+  key: keyof Pick<
+    PlayerSeasonCaOps,
+    "observed_ops" | "league_ops" | "expected_opponent_ops" | "ca_ops"
+  >;
+  label: string;
+}[] = [
+  { key: "observed_ops", label: "Observed OPS" },
+  { key: "league_ops", label: "League OPS baseline" },
+  { key: "expected_opponent_ops", label: "Expected opponent OPS" },
+  { key: "ca_ops", label: "CA-OPS" },
+];
+
+const CA_OPS_NOTE =
+  "CA-OPS is a custom retrospective metric that adjusts observed OPS for the quality of pitchers faced. It is not an official MLB statistic.";
 
 function lookupErrorMessage(error: unknown, fallback: string): string {
   if (error instanceof ApiError) {
@@ -82,6 +106,10 @@ function hasSeasonBattingLine(line: PlayerSeasonBatting): boolean {
   return line.games !== null;
 }
 
+function hasSeasonCaOpsLine(line: PlayerSeasonCaOps): boolean {
+  return line.plate_appearances !== null;
+}
+
 export function PlayerComparisonPage() {
   const [seasons, setSeasons] = useState<SeasonOption[]>([]);
   const [players, setPlayers] = useState<PlayerOption[]>([]);
@@ -98,8 +126,13 @@ export function PlayerComparisonPage() {
   const [comparison, setComparison] = useState<
     [PlayerSeasonBatting, PlayerSeasonBatting] | null
   >(null);
+  const [caOps, setCaOps] = useState<
+    [PlayerSeasonCaOps, PlayerSeasonCaOps] | null
+  >(null);
+  const [caOpsError, setCaOpsError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const compareController = useRef<AbortController | null>(null);
 
   const selectedSeason = seasons.find(
     (season) => String(season.season_id) === seasonId,
@@ -172,6 +205,20 @@ export function PlayerComparisonPage() {
     return () => controller.abort();
   }, [seasonId]);
 
+  useEffect(() => {
+    return () => compareController.current?.abort();
+  }, []);
+
+  function clearComparisonResults() {
+    compareController.current?.abort();
+    compareController.current = null;
+    setComparison(null);
+    setCaOps(null);
+    setCaOpsError(null);
+    setError(null);
+    setIsLoading(false);
+  }
+
   function handleSeasonChange(nextSeasonId: string) {
     setSeasonId(nextSeasonId);
     setFirstPlayerId("");
@@ -180,20 +227,17 @@ export function PlayerComparisonPage() {
     setSecondPlayerQuery("");
     setPlayers([]);
     setPlayersLoading(nextSeasonId !== "");
-    setComparison(null);
-    setError(null);
+    clearComparisonResults();
   }
 
   function handleFirstPlayerChange(nextPlayerId: string) {
     setFirstPlayerId(nextPlayerId);
-    setComparison(null);
-    setError(null);
+    clearComparisonResults();
   }
 
   function handleSecondPlayerChange(nextPlayerId: string) {
     setSecondPlayerId(nextPlayerId);
-    setComparison(null);
-    setError(null);
+    clearComparisonResults();
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -201,34 +245,85 @@ export function PlayerComparisonPage() {
     setError(null);
 
     if (samePlayerSelected) {
-      setComparison(null);
+      clearComparisonResults();
       setError("Select two different players.");
       return;
     }
 
     if (!canCompare) {
-      setComparison(null);
+      clearComparisonResults();
       setError("Select a season and two players.");
       return;
     }
 
+    compareController.current?.abort();
+    const controller = new AbortController();
+    compareController.current = controller;
     setIsLoading(true);
     setComparison(null);
+    setCaOps(null);
+    setCaOpsError(null);
     try {
-      const [first, second] = await Promise.all([
-        fetchPlayerSeasonBatting(Number(firstPlayerId), Number(seasonId)),
-        fetchPlayerSeasonBatting(Number(secondPlayerId), Number(seasonId)),
+      const [battingResult, caOpsResult] = await Promise.allSettled([
+        Promise.all([
+          fetchPlayerSeasonBatting(
+            Number(firstPlayerId),
+            Number(seasonId),
+            controller.signal,
+          ),
+          fetchPlayerSeasonBatting(
+            Number(secondPlayerId),
+            Number(seasonId),
+            controller.signal,
+          ),
+        ]),
+        Promise.all([
+          fetchPlayerSeasonCaOps(
+            Number(firstPlayerId),
+            Number(seasonId),
+            controller.signal,
+          ),
+          fetchPlayerSeasonCaOps(
+            Number(secondPlayerId),
+            Number(seasonId),
+            controller.signal,
+          ),
+        ]),
       ]);
-      setComparison([first, second]);
-    } catch (requestError) {
-      setComparison(null);
-      if (requestError instanceof PlayerSeasonBattingApiError) {
-        setError(requestError.detail);
+      if (controller.signal.aborted) {
+        return;
+      }
+      if (battingResult.status === "rejected") {
+        if (isAbortError(battingResult.reason)) {
+          return;
+        }
+        setComparison(null);
+        setCaOps(null);
+        if (battingResult.reason instanceof PlayerSeasonBattingApiError) {
+          setError(battingResult.reason.detail);
+        } else {
+          setError("Unable to load player season batting.");
+        }
+        return;
+      }
+      setComparison(battingResult.value);
+      if (caOpsResult.status === "fulfilled") {
+        setCaOps(caOpsResult.value);
+        return;
+      }
+      if (isAbortError(caOpsResult.reason)) {
+        return;
+      }
+      setCaOps(null);
+      if (caOpsResult.reason instanceof PlayerSeasonCaOpsApiError) {
+        setCaOpsError(caOpsResult.reason.detail);
       } else {
-        setError("Unable to load player season batting.");
+        setCaOpsError("Unable to load CA-OPS.");
       }
     } finally {
-      setIsLoading(false);
+      if (!controller.signal.aborted) {
+        setIsLoading(false);
+      }
     }
   }
 
@@ -244,6 +339,11 @@ export function PlayerComparisonPage() {
   const missingBattingNames = comparison
     ? comparison
         .filter((line) => !hasSeasonBattingLine(line))
+        .map((line) => line.full_name)
+    : [];
+  const missingCaOpsNames = caOps
+    ? caOps
+        .filter((line) => !hasSeasonCaOpsLine(line))
         .map((line) => line.full_name)
     : [];
 
@@ -356,6 +456,82 @@ export function PlayerComparisonPage() {
             first={comparison[0]}
             second={comparison[1]}
           />
+          <div className="ca-ops-section">
+            <h3 title={CA_OPS_NOTE}>CA-OPS</h3>
+            <p className="field-hint ca-ops-note">{CA_OPS_NOTE}</p>
+            {caOpsError ? (
+              <p className="status error">{caOpsError}</p>
+            ) : null}
+            {missingCaOpsNames.length > 0 ? (
+              <p className="status">
+                No CA-OPS line for {missingCaOpsNames.join(" and ")}
+                {seasonYearLabel ? ` in ${seasonYearLabel}` : ""}.
+              </p>
+            ) : null}
+            {caOps ? (
+              <>
+                <div className="comparison-table-wrap">
+                  <table className="comparison-table">
+                    <thead>
+                      <tr>
+                        <th>Metric</th>
+                        <th>{caOps[0].full_name}</th>
+                        <th>{caOps[1].full_name}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {CA_OPS_STATS.map((stat) => (
+                        <tr key={stat.key}>
+                          <th
+                            scope="row"
+                            title={
+                              stat.key === "ca_ops" ? CA_OPS_NOTE : undefined
+                            }
+                          >
+                            {stat.label}
+                          </th>
+                          <td>{formatAverage(caOps[0][stat.key])}</td>
+                          <td>{formatAverage(caOps[1][stat.key])}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <PlayerCaOpsComparisonChart
+                  first={caOps[0]}
+                  second={caOps[1]}
+                />
+              </>
+            ) : (
+              <div className="comparison-table-wrap">
+                <table className="comparison-table">
+                  <thead>
+                    <tr>
+                      <th>Metric</th>
+                      <th>{comparison[0].full_name}</th>
+                      <th>{comparison[1].full_name}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {CA_OPS_STATS.map((stat) => (
+                      <tr key={stat.key}>
+                        <th
+                          scope="row"
+                          title={
+                            stat.key === "ca_ops" ? CA_OPS_NOTE : undefined
+                          }
+                        >
+                          {stat.label}
+                        </th>
+                        <td>—</td>
+                        <td>—</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
           <div className="comparison-table-wrap">
             <table className="comparison-table">
               <thead>

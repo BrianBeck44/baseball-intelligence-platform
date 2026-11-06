@@ -24,6 +24,12 @@ from app.analytics.player_season_batting_data import (
     transform_player_season_batting,
 )
 from app.analytics.player_season_batting_loader import load_player_season_batting
+from app.analytics.player_season_ca_ops_data import (
+    get_player_season_ca_ops_appearances,
+    get_player_season_ca_ops_targets,
+    transform_player_season_ca_ops,
+)
+from app.analytics.player_season_ca_ops_loader import load_player_season_ca_ops
 from app.analytics.player_season_pitching_data import (
     get_player_season_pitching_games,
     transform_player_season_pitching,
@@ -32,6 +38,7 @@ from app.analytics.player_season_pitching_loader import load_player_season_pitch
 
 
 _ANALYTICS_CLEAR_ORDER = (
+    "player_season_ca_ops",
     "player_season_batting",
     "player_season_pitching",
     "player_game_batting",
@@ -53,6 +60,7 @@ class AnalyticsLoadResult:
     game_pitching: PlayerGamePitchingLoadResult
     pitch_type_effectiveness: PlayerPitchTypeEffectivenessLoadResult
     season_batting: SeasonLoadResult
+    season_ca_ops: SeasonLoadResult
     season_pitching: SeasonLoadResult
 
 
@@ -92,6 +100,19 @@ def load_all_analytics(connection: Connection) -> AnalyticsLoadResult:
         loaded_count=load_player_season_batting(connection, season_batting_rows),
     )
 
+    season_ca_ops_appearances = get_player_season_ca_ops_appearances(connection)
+    season_ca_ops_targets = get_player_season_ca_ops_targets(connection)
+    season_ca_ops_rows = transform_player_season_ca_ops(
+        connection,
+        season_ca_ops_appearances,
+        season_ca_ops_targets,
+    )
+    season_ca_ops = SeasonLoadResult(
+        extracted_count=len(season_ca_ops_appearances),
+        transformed_count=len(season_ca_ops_rows),
+        loaded_count=load_player_season_ca_ops(connection, season_ca_ops_rows),
+    )
+
     season_pitching_games = get_player_season_pitching_games(connection)
     season_pitching_rows = transform_player_season_pitching(
         connection,
@@ -111,5 +132,6 @@ def load_all_analytics(connection: Connection) -> AnalyticsLoadResult:
         game_pitching=game_pitching,
         pitch_type_effectiveness=pitch_type_effectiveness,
         season_batting=season_batting,
+        season_ca_ops=season_ca_ops,
         season_pitching=season_pitching,
     )

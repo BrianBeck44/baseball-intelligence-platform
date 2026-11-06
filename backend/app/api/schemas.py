@@ -94,3 +94,17 @@ class PlayerSeasonBattingResponse(BaseModel):
     ops: float | None
     strikeout_rate: float | None
     walk_rate: float | None
+
+
+class PlayerSeasonCaOpsResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    player_id: int
+    full_name: str
+    season_id: int
+    season_year: int | None
+    plate_appearances: int | None
+    observed_ops: float | None
+    league_ops: float | None
+    expected_opponent_ops: float | None
+    ca_ops: float | None

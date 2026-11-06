@@ -45,6 +45,12 @@ def main() -> int:
             f"{result.season_batting.loaded_count}"
         )
         print(
+            "Season CA-OPS extracted/transformed/loaded: "
+            f"{result.season_ca_ops.extracted_count}/"
+            f"{result.season_ca_ops.transformed_count}/"
+            f"{result.season_ca_ops.loaded_count}"
+        )
+        print(
             "Season pitching extracted/transformed/loaded: "
             f"{result.season_pitching.extracted_count}/"
             f"{result.season_pitching.transformed_count}/"
