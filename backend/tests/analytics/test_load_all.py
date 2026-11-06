@@ -222,6 +222,9 @@ def test_load_all_analytics_clears_then_loads_in_dependency_order():
     effectiveness = PlayerPitchTypeEffectivenessLoadResult(4, 2, 2)
     season_batting_games = [object(), object()]
     season_batting_rows = [object()]
+    season_ca_ops_appearances = [object(), object(), object()]
+    season_ca_ops_targets = [object()]
+    season_ca_ops_rows = [object()]
     season_pitching_games = [object()]
     season_pitching_rows = [object()]
     order: list[str] = []
@@ -263,6 +266,28 @@ def test_load_all_analytics_clears_then_loads_in_dependency_order():
             side_effect=track("season_batting_load", 1),
         ),
         patch(
+            "app.analytics.load_all.get_player_season_ca_ops_appearances",
+            side_effect=track(
+                "season_ca_ops_extract_appearances",
+                season_ca_ops_appearances,
+            ),
+        ),
+        patch(
+            "app.analytics.load_all.get_player_season_ca_ops_targets",
+            side_effect=track(
+                "season_ca_ops_extract_targets",
+                season_ca_ops_targets,
+            ),
+        ),
+        patch(
+            "app.analytics.load_all.transform_player_season_ca_ops",
+            side_effect=track("season_ca_ops_transform", season_ca_ops_rows),
+        ),
+        patch(
+            "app.analytics.load_all.load_player_season_ca_ops",
+            side_effect=track("season_ca_ops_load", 1),
+        ),
+        patch(
             "app.analytics.load_all.get_player_season_pitching_games",
             side_effect=track("season_pitching_extract", season_pitching_games),
         ),
@@ -285,6 +310,10 @@ def test_load_all_analytics_clears_then_loads_in_dependency_order():
         "season_batting_extract",
         "season_batting_transform",
         "season_batting_load",
+        "season_ca_ops_extract_appearances",
+        "season_ca_ops_extract_targets",
+        "season_ca_ops_transform",
+        "season_ca_ops_load",
         "season_pitching_extract",
         "season_pitching_transform",
         "season_pitching_load",
@@ -294,6 +323,7 @@ def test_load_all_analytics_clears_then_loads_in_dependency_order():
         game_pitching=game_pitching,
         pitch_type_effectiveness=effectiveness,
         season_batting=SeasonLoadResult(2, 1, 1),
+        season_ca_ops=SeasonLoadResult(3, 1, 1),
         season_pitching=SeasonLoadResult(1, 1, 1),
     )
     connection.commit.assert_not_called()

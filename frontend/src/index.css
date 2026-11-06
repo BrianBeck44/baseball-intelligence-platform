@@ -305,3 +305,24 @@ th {
   text-align: right;
   white-space: nowrap;
 }
+
+.ca-ops-section {
+  margin: 0 0 1.5rem;
+}
+
+.ca-ops-section h3 {
+  margin: 0 0 0.5rem;
+  font-size: 1.05rem;
+}
+
+.ca-ops-note {
+  margin: 0 0 1rem;
+}
+
+.ca-ops-section .comparison-table-wrap {
+  margin-bottom: 1rem;
+}
+
+.ca-ops-chart {
+  margin-bottom: 0;
+}

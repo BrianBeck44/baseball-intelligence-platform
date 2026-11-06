@@ -43,6 +43,7 @@ def _zero_rebuild_result() -> AnalyticsLoadResult:
         game_pitching=PlayerGamePitchingLoadResult(0, 0, 0),
         pitch_type_effectiveness=PlayerPitchTypeEffectivenessLoadResult(0, 0, 0),
         season_batting=SeasonLoadResult(0, 0, 0),
+        season_ca_ops=SeasonLoadResult(0, 0, 0),
         season_pitching=SeasonLoadResult(0, 0, 0),
     )
 

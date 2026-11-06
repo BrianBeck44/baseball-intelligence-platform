@@ -251,6 +251,15 @@ def _analytics_table(connection: Connection) -> Table:
     )
 
 
+def batting_increments_for(outcome_code: str | None) -> _BattingIncrements:
+    """Return counting-stat increments for a plate-appearance outcome.
+
+    This is the authoritative batting-outcome mapping. Downstream
+    analytics must reuse it rather than defining a second matrix.
+    """
+    return _increments_for(outcome_code)
+
+
 def _increments_for(outcome_code: str | None) -> _BattingIncrements:
     try:
         return _OUTCOME_INCREMENTS[outcome_code]

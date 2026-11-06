@@ -11,6 +11,14 @@ from app.analytics.player_game_pitching_loader import PlayerGamePitchingLoadResu
 from app.analytics.player_pitch_type_effectiveness_loader import (
     PlayerPitchTypeEffectivenessLoadResult,
 )
+from app.analytics.player_season_ca_ops_data import (
+    PlayerSeasonCaOps,
+    get_player_season_ca_ops_appearances,
+    get_player_season_ca_ops_targets,
+    transform_player_season_ca_ops,
+)
+
+_RATE_SCALE = 6
 
 
 _REQUIRED_CURATED_SOURCES = (
@@ -64,6 +72,7 @@ def validate_analytics_rebuild(
         result.pitch_type_effectiveness,
     )
     validate_player_season_batting_load(connection, result.season_batting)
+    validate_player_season_ca_ops_load(connection, result.season_ca_ops)
     validate_player_season_pitching_load(connection, result.season_pitching)
 
 
@@ -431,6 +440,108 @@ def validate_player_season_batting_load(
     )
 
 
+def validate_player_season_ca_ops_load(
+    connection: Connection,
+    result: SeasonLoadResult,
+) -> None:
+    source = connection.execute(
+        text(
+            """
+            SELECT
+                (SELECT COUNT(*) FROM curated.plate_appearance)
+                    AS plate_appearances,
+                (SELECT COUNT(*) FROM analytics.player_season_batting)
+                    AS batting_rows
+            """
+        )
+    ).mappings().one()
+    totals = connection.execute(
+        text(
+            """
+            SELECT
+                (SELECT COUNT(*) FROM analytics.player_season_ca_ops)
+                    AS row_count,
+                COUNT(*) FILTER (
+                    WHERE batting.ops IS DISTINCT FROM ca_ops.observed_ops
+                ) AS observed_ops_mismatches,
+                COUNT(*) FILTER (
+                    WHERE batting.player_id IS NULL
+                ) AS extra_ca_ops_rows,
+                COUNT(*) FILTER (
+                    WHERE ca_ops.player_id IS NULL
+                ) AS missing_ca_ops_rows
+            FROM analytics.player_season_batting AS batting
+            FULL OUTER JOIN analytics.player_season_ca_ops AS ca_ops
+              ON ca_ops.player_id = batting.player_id
+             AND ca_ops.season_id = batting.season_id
+            """
+        )
+    ).mappings().one()
+    duplicate_grains = _duplicate_grain_count(
+        connection,
+        """
+        SELECT player_id, season_id
+        FROM analytics.player_season_ca_ops
+        GROUP BY player_id, season_id
+        HAVING COUNT(*) > 1
+        """,
+    )
+    plate_appearance_mismatches = int(
+        connection.execute(
+            text(
+                """
+                SELECT COUNT(*)
+                FROM analytics.player_season_ca_ops AS ca_ops
+                LEFT JOIN (
+                    SELECT
+                        plate_appearance.batter_id AS player_id,
+                        game.season_id,
+                        COUNT(*) AS plate_appearances
+                    FROM curated.plate_appearance
+                    JOIN curated.game
+                      ON game.game_id = plate_appearance.game_id
+                    GROUP BY plate_appearance.batter_id, game.season_id
+                ) AS pa
+                  ON pa.player_id = ca_ops.player_id
+                 AND pa.season_id = ca_ops.season_id
+                WHERE ca_ops.plate_appearances
+                    IS DISTINCT FROM COALESCE(pa.plate_appearances, 0)
+                """
+            )
+        ).scalar_one()
+    )
+    recomputed_mismatches = _recomputed_ca_ops_mismatch_count(connection)
+    expected_appearances = int(source["plate_appearances"])
+    expected_rows = int(source["batting_rows"])
+    _raise_if_mismatched(
+        "player_season_ca_ops",
+        {
+            "extracted": expected_appearances,
+            "transformed": expected_rows,
+            "loaded": expected_rows,
+            "rows": expected_rows,
+            "observed_ops_mismatches": 0,
+            "extra_ca_ops_rows": 0,
+            "missing_ca_ops_rows": 0,
+            "duplicate_grains": 0,
+            "plate_appearance_mismatches": 0,
+            "recomputed_mismatches": 0,
+        },
+        {
+            "extracted": result.extracted_count,
+            "transformed": result.transformed_count,
+            "loaded": result.loaded_count,
+            "rows": int(totals["row_count"]),
+            "observed_ops_mismatches": int(totals["observed_ops_mismatches"]),
+            "extra_ca_ops_rows": int(totals["extra_ca_ops_rows"]),
+            "missing_ca_ops_rows": int(totals["missing_ca_ops_rows"]),
+            "duplicate_grains": duplicate_grains,
+            "plate_appearance_mismatches": plate_appearance_mismatches,
+            "recomputed_mismatches": recomputed_mismatches,
+        },
+    )
+
+
 def validate_player_season_pitching_load(
     connection: Connection,
     result: SeasonLoadResult,
@@ -490,6 +601,62 @@ def validate_player_season_pitching_load(
             "duplicate_grains": duplicate_grains,
         },
     )
+
+
+def _recomputed_ca_ops_mismatch_count(connection: Connection) -> int:
+    expected_rows = transform_player_season_ca_ops(
+        connection,
+        get_player_season_ca_ops_appearances(connection),
+        get_player_season_ca_ops_targets(connection),
+    )
+    persisted = {
+        (int(row["player_id"]), int(row["season_id"])): row
+        for row in connection.execute(
+            text(
+                """
+                SELECT
+                    player_id,
+                    season_id,
+                    plate_appearances,
+                    observed_ops,
+                    league_ops,
+                    expected_opponent_ops,
+                    ca_ops
+                FROM analytics.player_season_ca_ops
+                """
+            )
+        ).mappings()
+    }
+    mismatches = 0
+    for expected in expected_rows:
+        stored = persisted.get((expected.player_id, expected.season_id))
+        if stored is None or not _persisted_ca_ops_row_matches(expected, stored):
+            mismatches += 1
+    return mismatches
+
+
+def _persisted_ca_ops_row_matches(
+    expected: PlayerSeasonCaOps,
+    stored: dict[str, object],
+) -> bool:
+    return (
+        expected.plate_appearances == int(stored["plate_appearances"])
+        and _rate_values_equal(expected.observed_ops, stored["observed_ops"])
+        and _rate_values_equal(expected.league_ops, stored["league_ops"])
+        and _rate_values_equal(
+            expected.expected_opponent_ops,
+            stored["expected_opponent_ops"],
+        )
+        and _rate_values_equal(expected.ca_ops, stored["ca_ops"])
+    )
+
+
+def _rate_values_equal(left: object, right: object) -> bool:
+    if left is None and right is None:
+        return True
+    if left is None or right is None:
+        return False
+    return round(float(left), _RATE_SCALE) == round(float(right), _RATE_SCALE)
 
 
 def _duplicate_grain_count(connection: Connection, grouped_sql: str) -> int:

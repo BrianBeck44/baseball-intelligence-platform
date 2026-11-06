@@ -1092,3 +1092,31 @@ player performance trends
 The trend layer should favor reusable analytical calculations over duplicated persisted data.
 
 The initial implementation should therefore establish the analytical definitions, validate the calculations, and determine whether PostgreSQL views and window functions are sufficient before introducing another physical analytics table.
+
+## 4. Competition-Adjusted OPS
+
+League-adjusted batting metrics remain out of scope for the player performance trend model in Section 3.
+
+The v1 product for that class of question is a separate derived table, documented in ADR-005:
+
+```text
+analytics.player_season_ca_ops
+```
+
+Grain:
+
+```text
+(player_id, season_id)
+```
+
+CA-OPS is a custom, retrospective batter-season adjustment of observed OPS for the quality of opposing pitchers faced. It is not an official MLB statistic and not a projection of future performance.
+
+Observed OPS is read from `analytics.player_season_batting.ops`. Pitcher-season and batter-pitcher counting statistics are derived from `curated.plate_appearance`, `curated.outcome_type`, and `curated.game` using the existing batting-outcome increment matrix. Existing conventional batting and pitching metric definitions are not changed.
+
+The methodology, leave-one-batter-out baseline, `k = 150` shrinkage, first-pitcher attribution limitation, null rules, and implementation sequence are defined in:
+
+```text
+docs/adr/ADR-005-competition-adjusted-ops.md
+```
+
+Do not treat Section 3's exclusion of league-adjusted metrics from the trend model as a prohibition on that separate CA-OPS table.

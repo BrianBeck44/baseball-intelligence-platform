@@ -11,11 +11,13 @@ from app.api.schemas import (
     PlayerGameHistoryResponse,
     PlayerListResponse,
     PlayerSeasonBattingResponse,
+    PlayerSeasonCaOpsResponse,
 )
 from app.core.db import get_connection
 from app.services.lookups import get_players_for_season
 from app.services.player_games import PlayerNotFoundError, get_player_game_history
 from app.services.player_season_batting import get_player_season_batting_response
+from app.services.player_season_ca_ops import get_player_season_ca_ops_response
 
 router = APIRouter(prefix="/players", tags=["players"])
 
@@ -74,6 +76,29 @@ def read_player_season_batting(
     """Return a player's season batting line from analytics."""
     try:
         return get_player_season_batting_response(
+            connection,
+            player_id=player_id,
+            season_id=season_id,
+        )
+    except PlayerNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Player not found",
+        ) from exc
+
+
+@router.get(
+    "/{player_id}/season-ca-ops",
+    response_model=PlayerSeasonCaOpsResponse,
+)
+def read_player_season_ca_ops(
+    player_id: Annotated[int, Path(ge=1)],
+    season_id: Annotated[int, Query(ge=1)],
+    connection: Annotated[Connection, Depends(get_connection)],
+) -> PlayerSeasonCaOpsResponse:
+    """Return a player's season CA-OPS line from analytics."""
+    try:
+        return get_player_season_ca_ops_response(
             connection,
             player_id=player_id,
             season_id=season_id,
