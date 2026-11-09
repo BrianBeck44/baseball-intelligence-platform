@@ -174,7 +174,7 @@ Develop analytical transformations, baseball metrics, player analysis, team anal
 
 Build the REST API and application/service architecture.
 
-**Status:** Planned
+**Status:** In Progress
 
 ### Project 5 — React Application
 
@@ -190,19 +190,19 @@ and run instructions are in `frontend/README.md`.
 
 Implement unit, integration, API, and data-quality testing.
 
-**Status:** Planned
+**Status:** In Progress
 
 ### Project 7 — Infrastructure & Deployment
 
 Implement Docker, CI/CD, deployment, logging, and production-oriented infrastructure.
 
-**Status:** Planned
+**Status:** In Progress
 
 ### Project 8 — Portfolio & Documentation
 
 Prepare the final project for portfolio presentation, including architecture documentation, technical walkthroughs, and project demonstrations.
 
-**Status:** Planned
+**Status:** In Progress
 
 ## Current Focus
 
