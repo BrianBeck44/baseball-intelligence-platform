@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.analytics import router as analytics_router
 from app.api.players import router as players_router
 from app.api.seasons import router as seasons_router
 from app.api.teams import router as teams_router
@@ -33,6 +34,7 @@ app.add_middleware(
 app.include_router(seasons_router)
 app.include_router(teams_router)
 app.include_router(players_router)
+app.include_router(analytics_router)
 
 
 @app.get("/health")

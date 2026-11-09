@@ -64,7 +64,7 @@ body {
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem;
-  max-width: 960px;
+  max-width: 1080px;
   margin: 0 auto;
   padding: 1.25rem 1.5rem 0;
 }
@@ -325,4 +325,75 @@ th {
 
 .ca-ops-chart {
   margin-bottom: 0;
+}
+
+.ca-ops-dashboard {
+  max-width: 1080px;
+}
+
+.ca-ops-explainer {
+  margin: 0 0 1.5rem;
+  padding: 0.9rem 1rem;
+  background: var(--color-surface);
+  border: 1px solid var(--color-row-border);
+}
+
+.ca-ops-explainer p {
+  margin: 0 0 0.75rem;
+  color: var(--color-text);
+}
+
+.ca-ops-explainer ul {
+  margin: 0;
+  padding-left: 1.2rem;
+  color: var(--color-muted);
+}
+
+.ca-ops-explainer li {
+  margin: 0 0 0.35rem;
+}
+
+.ca-ops-formula {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.95rem;
+  color: var(--color-text);
+}
+
+.ca-ops-dashboard-charts {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1rem;
+}
+
+.ca-ops-dashboard-panel {
+  overflow-x: auto;
+}
+
+.chart-explanation {
+  margin: 0 0 0.75rem;
+  color: var(--color-muted);
+  font-size: 0.9rem;
+  font-weight: 500;
+}
+
+.chart-tooltip {
+  padding: 0.5rem 0.65rem;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  color: var(--color-text);
+  font-size: 0.85rem;
+}
+
+.chart-tooltip p {
+  margin: 0;
+}
+
+.chart-tooltip-player {
+  margin-bottom: 0.35rem;
+  font-weight: 600;
+}
+
+.ca-ops-ranked-chart {
+  width: 100%;
+  min-width: 0;
 }

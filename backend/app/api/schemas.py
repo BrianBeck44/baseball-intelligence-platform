@@ -108,3 +108,11 @@ class PlayerSeasonCaOpsResponse(BaseModel):
     league_ops: float | None
     expected_opponent_ops: float | None
     ca_ops: float | None
+
+
+class SeasonCaOpsAnalyticsResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    season_id: int
+    season_year: int | None
+    players: list[PlayerSeasonCaOpsResponse]
